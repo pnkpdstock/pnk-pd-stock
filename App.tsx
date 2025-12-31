@@ -21,9 +21,6 @@ const App: React.FC = () => {
   const [scanResult, setScanResult] = useState<LabelExtractionResult | null>(null);
   const [matchedProduct, setMatchedProduct] = useState<Product | null>(null);
   const [potentialMatches, setPotentialMatches] = useState<Product[]>([]);
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
-  const [isEditing, setIsEditing] = useState(false);
-  const [editData, setEditData] = useState<Partial<Product>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -33,7 +30,6 @@ const App: React.FC = () => {
   const [earliestExpInfo, setEarliestExpInfo] = useState<{ exp: string, batch: string } | null>(null);
   const [duplicateBatchInfo, setDuplicateBatchInfo] = useState<{ date: string, qty: number } | null>(null);
   const [duplicateProductWarning, setDuplicateProductWarning] = useState<{ name: string, manufacturer: string } | null>(null);
-  const [historyModal, setHistoryModal] = useState<{ isOpen: boolean, type: 'in' | 'out', productName: string } | null>(null);
   const [loginAttemptUser, setLoginAttemptUser] = useState<User | null>(null);
   const [loginPassword, setLoginPassword] = useState('');
 
@@ -43,6 +39,10 @@ const App: React.FC = () => {
 
   const [tempContact, setTempContact] = useState('');
   const [tempMinStock, setTempMinStock] = useState<number>(0);
+  
+  // State for manual selection
+  const [isManualSelecting, setIsManualSelecting] = useState(false);
+  const [manualProductSearch, setManualProductSearch] = useState('');
 
   useEffect(() => {
     const saved = localStorage.getItem('supabase_config');
@@ -158,7 +158,6 @@ const App: React.FC = () => {
     setTimeout(() => setSuccessMessage(null), 2000);
   };
 
-  // Logic: Check first 10 characters for match
   const findMatches = (scannedThai: string, scannedEng: string) => {
     const normalize = (s: string) => (s || "").replace(/[\s\-\_\.]/g, '').toLowerCase();
     const normSThai = normalize(scannedThai);
@@ -217,6 +216,19 @@ const App: React.FC = () => {
     }
   };
 
+  const startManualRegistration = () => {
+    setScanResult({
+      thaiName: '',
+      englishName: '',
+      batchNo: '',
+      mfd: '',
+      exp: '',
+      manufacturer: '',
+    });
+    setTempContact('');
+    setTempMinStock(0);
+  };
+
   const executeRegistration = async () => {
     if (!currentUser || !scanResult) return;
     setIsLoading(true);
@@ -267,6 +279,7 @@ const App: React.FC = () => {
     setMatchedProduct(product);
     setScanResult({ ...data, thaiName: product.thai_name, englishName: product.english_name });
     setInputQty(1);
+    setIsManualSelecting(false);
     const duplicate = items.find(i => i.batch_no === data.batchNo && i.status === 'In Stock') || receiptHistory.find(h => h.batch_no === data.batchNo);
     if (duplicate) {
       setDuplicateBatchInfo({ 
@@ -274,6 +287,13 @@ const App: React.FC = () => {
         qty: duplicate.quantity 
       });
     }
+  };
+
+  const startManualStockIn = () => {
+    setIsManualSelecting(true);
+    setManualProductSearch('');
+    setMatchedProduct(null);
+    setScanResult(null);
   };
 
   const executeStockIn = async () => {
@@ -329,11 +349,19 @@ const App: React.FC = () => {
     setScanResult({ ...data, thaiName: product.thai_name, englishName: product.english_name });
     setInputQty(1);
     setPatientName('');
+    setIsManualSelecting(false);
     const inStockItems = items.filter(i => i.status === 'In Stock' && ((i.thai_name === product.thai_name) || (i.english_name === product.english_name)));
     if (inStockItems.length > 0) {
       const earliest = inStockItems.reduce((prev, curr) => (prev.exp < curr.exp) ? prev : curr);
       if (data.exp > earliest.exp) setEarliestExpInfo({ exp: earliest.exp, batch: earliest.batch_no });
     }
+  };
+
+  const startManualStockOut = () => {
+    setIsManualSelecting(true);
+    setManualProductSearch('');
+    setMatchedProduct(null);
+    setScanResult(null);
   };
 
   const executeStockOut = async () => {
@@ -389,6 +417,11 @@ const App: React.FC = () => {
     return registeredProducts.filter(p => (p.thai_name || "").toLowerCase().includes(searchQuery.toLowerCase()) || (p.english_name || "").toLowerCase().includes(searchQuery.toLowerCase()));
   }, [registeredProducts, searchQuery]);
 
+  const filteredManualProducts = useMemo(() => {
+    if (!manualProductSearch) return registeredProducts;
+    return registeredProducts.filter(p => (p.thai_name || "").toLowerCase().includes(manualProductSearch.toLowerCase()) || (p.english_name || "").toLowerCase().includes(manualProductSearch.toLowerCase()));
+  }, [registeredProducts, manualProductSearch]);
+
   const LoginRequired = () => (
     <div className="bg-blue-50/50 border-2 border-blue-100 p-10 rounded-[3rem] text-center space-y-6 shadow-sm">
       <div className="w-24 h-24 bg-blue-100/50 rounded-full flex items-center justify-center mx-auto text-4xl">👥</div>
@@ -400,14 +433,24 @@ const App: React.FC = () => {
   );
 
   return (
-    <Layout activeView={activeView} onViewChange={(v) => { setActiveView(v); setError(null); setScanResult(null); setMatchedProduct(null); setPotentialMatches([]); setEarliestExpInfo(null); setDuplicateBatchInfo(null); setDuplicateProductWarning(null); }}>
+    <Layout activeView={activeView} onViewChange={(v) => { 
+      setActiveView(v); 
+      setError(null); 
+      setScanResult(null); 
+      setMatchedProduct(null); 
+      setPotentialMatches([]); 
+      setEarliestExpInfo(null); 
+      setDuplicateBatchInfo(null); 
+      setDuplicateProductWarning(null); 
+      setIsManualSelecting(false);
+    }}>
       
-      {/* Selection Dropdown List for Potential Matches */}
+      {/* Dropdown Selection for Potential Matches */}
       {(potentialMatches.length > 1 && !matchedProduct) && (
         <div className="fixed inset-0 bg-blue-900/90 backdrop-blur-md z-[550] flex items-center justify-center p-4 animate-in fade-in">
           <div className="bg-white w-full max-w-md rounded-[2.5rem] overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.3)] animate-in zoom-in-95">
             <div className="p-8 bg-blue-900 text-white">
-              <h3 className="font-black text-xl">พบรายการใกล้เคียง ({potentialMatches.length})</h3>
+              <h3 className="font-black text-xl text-white">พบรายการใกล้เคียง ({potentialMatches.length})</h3>
               <p className="text-[10px] font-bold text-blue-200 uppercase tracking-widest mt-1">กรุณาเลือกรายการสินค้าที่ถูกต้องจากระบบ</p>
             </div>
             <div className="p-4 max-h-[60vh] overflow-y-auto space-y-3 bg-slate-50">
@@ -418,10 +461,9 @@ const App: React.FC = () => {
                   className="w-full text-left p-5 bg-white border-2 border-slate-100 rounded-3xl hover:border-blue-500 hover:shadow-lg transition-all flex items-center gap-4 group"
                 >
                   <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center border group-hover:border-blue-200 overflow-hidden shrink-0">
-                    {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl">📦</span>}
+                    {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl text-blue-900">📦</span>}
                   </div>
                   <div className="flex-1 overflow-hidden">
-                    {/* Dark Blue text for product name */}
                     <p className="font-black text-blue-900 text-base group-hover:text-blue-700 truncate">{p.thai_name}</p>
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mt-0.5">{(p.manufacturer || 'ไม่ระบุผู้ผลิต')}</p>
                   </div>
@@ -435,13 +477,71 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Manual Product Selection Overlay (for Stock In/Out) */}
+      {isManualSelecting && (
+        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[550] flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white w-full max-w-lg rounded-[2.5rem] overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
+            <div className="p-8 bg-purple-600 text-white">
+              <h3 className="font-black text-xl text-white">เลือกสินค้าเพื่อ{activeView === View.STOCK_IN ? 'รับเข้า' : 'จ่ายออก'}</h3>
+              <p className="text-[10px] font-bold text-purple-100 uppercase tracking-widest mt-1">กรุณาเลือกสินค้าจากรายการ Master Data</p>
+            </div>
+            <div className="p-6 border-b border-slate-100">
+               <input 
+                 type="text" 
+                 placeholder="🔍 ค้นหาด้วยชื่อสินค้า..." 
+                 className="w-full p-4 bg-slate-50 border-2 border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-purple-100 font-black text-blue-900"
+                 value={manualProductSearch}
+                 onChange={e => setManualProductSearch(e.target.value)}
+                 autoFocus
+               />
+            </div>
+            <div className="p-4 overflow-y-auto space-y-3 bg-slate-50 flex-1">
+              {filteredManualProducts.map((p) => (
+                <button 
+                  key={p.id}
+                  onClick={() => {
+                    const emptyResult = {
+                      thaiName: p.thai_name,
+                      englishName: p.english_name,
+                      batchNo: '',
+                      mfd: '',
+                      exp: '',
+                      manufacturer: p.manufacturer || '',
+                    };
+                    activeView === View.STOCK_IN ? selectItemForStockIn(p, emptyResult) : selectItemForStockOut(p, emptyResult);
+                  }}
+                  className="w-full text-left p-5 bg-white border-2 border-slate-100 rounded-3xl hover:border-purple-500 hover:shadow-lg transition-all flex items-center gap-4 group"
+                >
+                  <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center border group-hover:border-purple-200 overflow-hidden shrink-0">
+                    {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl text-purple-600">📦</span>}
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <p className="font-black text-blue-900 text-base group-hover:text-purple-700 truncate">{p.thai_name}</p>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mt-0.5">{(p.manufacturer || 'ไม่ระบุผู้ผลิต')}</p>
+                  </div>
+                </button>
+              ))}
+              {filteredManualProducts.length === 0 && (
+                <div className="text-center py-10">
+                  <p className="text-slate-400 font-black">ไม่พบข้อมูลสินค้าที่ค้นหา</p>
+                  <button onClick={() => setActiveView(View.REGISTRATION)} className="mt-4 text-purple-600 font-black underline">ไปหน้าลงทะเบียน Master Data</button>
+                </div>
+              )}
+            </div>
+            <div className="p-6 bg-white border-t border-slate-100 text-center">
+              <button onClick={() => setIsManualSelecting(false)} className="text-sm font-black text-slate-400 hover:text-red-500 transition-colors">ยกเลิก</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Login Password Modal */}
       {loginAttemptUser && (
         <div className="fixed inset-0 bg-blue-900/90 backdrop-blur-md z-[600] flex items-center justify-center p-4 animate-in fade-in">
           <div className="bg-white w-full max-w-sm rounded-[3rem] p-8 space-y-6 shadow-2xl">
             <div className="text-center">
               <div className="w-24 h-24 bg-blue-50 text-blue-900 rounded-full flex items-center justify-center mx-auto text-4xl font-black mb-6 shadow-inner">{loginAttemptUser.firstName[0]}</div>
-              <h3 className="text-2xl font-black text-blue-900">ระบุรหัสผ่าน</h3>
+              <h3 className="text-2xl font-black text-blue-900 text-blue-900">ระบุรหัสผ่าน</h3>
               <p className="text-sm font-bold text-slate-400 mt-1">คุณ {loginAttemptUser.firstName} กรุณายืนยันตัวตน</p>
             </div>
             <input 
@@ -482,7 +582,7 @@ const App: React.FC = () => {
                       <p className={`text-[11px] font-bold ${currentUser?.id === u.id ? 'text-blue-200' : 'text-slate-400'}`}>@{u.username}</p>
                     </div>
                   </div>
-                  {currentUser?.id === u.id && <span className="text-2xl">✅</span>}
+                  {currentUser?.id === u.id && <span className="text-2xl text-white">✅</span>}
                 </div>
               ))}
             </div>
@@ -570,7 +670,12 @@ const App: React.FC = () => {
                   <h2 className="text-3xl font-black leading-none text-white">รับสินค้าเข้า</h2>
                   <p className="text-xs font-bold text-blue-200 uppercase tracking-[0.2em] mt-3">Inventory In-Flow</p>
                 </div>
-                <Scanner label="สแกนฉลากเพื่อรับเข้า" onScan={handleStockIn} isLoading={isLoading} />
+                <div className="flex flex-col gap-4">
+                  <Scanner label="สแกนฉลากเพื่อรับเข้า" onScan={handleStockIn} isLoading={isLoading} />
+                  <button onClick={startManualStockIn} className="w-full py-4 bg-white border-2 border-slate-100 rounded-[2rem] text-blue-900 font-black text-sm shadow-sm hover:bg-slate-50 transition-all">
+                    ⌨️ กรณีกล้องเสีย/ไม่สำเร็จ: กรอกข้อมูลเอง (Manual)
+                  </button>
+                </div>
                 
                 {scanResult && matchedProduct && (
                   <div className="bg-white p-10 rounded-[3rem] shadow-2xl border-t-8 border-blue-900 space-y-8 animate-in slide-in-from-bottom-6">
@@ -579,9 +684,7 @@ const App: React.FC = () => {
                           <p className="text-[10px] font-black text-blue-900/40 uppercase mb-2 tracking-widest">สินค้าที่เลือก</p>
                           <h4 className="font-black text-blue-900 text-xl leading-tight">{matchedProduct.thai_name}</h4>
                         </div>
-                        {potentialMatches.length > 1 && (
-                          <button onClick={() => {setMatchedProduct(null); setDuplicateBatchInfo(null);}} className="text-[11px] font-black text-blue-900 bg-white px-4 py-2 rounded-xl shadow-sm hover:shadow-md transition-all">เปลี่ยนรายการ</button>
-                        )}
+                        <button onClick={() => {setMatchedProduct(null); setDuplicateBatchInfo(null); startManualStockIn();}} className="text-[11px] font-black text-blue-900 bg-white px-4 py-2 rounded-xl shadow-sm hover:shadow-md transition-all">เปลี่ยนรายการ</button>
                     </div>
 
                     {duplicateBatchInfo && (
@@ -594,14 +697,23 @@ const App: React.FC = () => {
                       </div>
                     )}
 
-                    <div className="grid grid-cols-2 gap-6">
-                        <div className="bg-slate-50 p-6 rounded-3xl text-center border border-slate-100">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
                           <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Batch Number</p>
-                          <p className="font-black text-blue-900 text-xl">{scanResult.batchNo}</p>
+                          <input 
+                            className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-blue-400" 
+                            value={scanResult.batchNo}
+                            onChange={e => setScanResult({...scanResult, batchNo: e.target.value})}
+                          />
                         </div>
-                        <div className="bg-slate-50 p-6 rounded-3xl text-center border border-slate-100">
-                          <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Expiry Date</p>
-                          <p className="font-black text-red-600 text-xl">{scanResult.exp}</p>
+                        <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
+                          <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Expiry Date (หมดอายุ)</p>
+                          <input 
+                            type="date"
+                            className="w-full bg-transparent font-black text-red-600 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400" 
+                            value={scanResult.exp}
+                            onChange={e => setScanResult({...scanResult, exp: e.target.value})}
+                          />
                         </div>
                     </div>
 
@@ -633,7 +745,12 @@ const App: React.FC = () => {
                   <h2 className="text-3xl font-black leading-none text-white">จ่ายสินค้าออก</h2>
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em] mt-3">Release & Distribution</p>
                 </div>
-                <Scanner label="สแกนฉลากเพื่อจ่ายออก" onScan={handleStockOutScan} isLoading={isLoading} />
+                <div className="flex flex-col gap-4">
+                  <Scanner label="สแกนฉลากเพื่อจ่ายออก" onScan={handleStockOutScan} isLoading={isLoading} />
+                  <button onClick={startManualStockOut} className="w-full py-4 bg-white border-2 border-slate-100 rounded-[2rem] text-blue-900 font-black text-sm shadow-sm hover:bg-slate-50 transition-all">
+                    ⌨️ กรณีกล้องเสีย/ไม่สำเร็จ: ค้นหาสินค้าและกรอกเอง
+                  </button>
+                </div>
 
                 {scanResult && matchedProduct && (
                   <div className="bg-white p-10 rounded-[3rem] shadow-2xl border-t-8 border-red-600 space-y-8 animate-in slide-in-from-bottom-6">
@@ -642,9 +759,7 @@ const App: React.FC = () => {
                           <p className="text-[10px] font-black text-red-900/40 uppercase mb-2 tracking-widest">สินค้าเป้าหมาย</p>
                           <h4 className="font-black text-blue-900 text-xl leading-tight">{matchedProduct.thai_name}</h4>
                         </div>
-                        {potentialMatches.length > 1 && (
-                          <button onClick={() => {setMatchedProduct(null); setEarliestExpInfo(null);}} className="text-[11px] font-black text-blue-900 bg-white px-4 py-2 rounded-xl shadow-sm">เปลี่ยน</button>
-                        )}
+                        <button onClick={() => {setMatchedProduct(null); setEarliestExpInfo(null); startManualStockOut();}} className="text-[11px] font-black text-blue-900 bg-white px-4 py-2 rounded-xl shadow-sm">เปลี่ยน</button>
                     </div>
 
                     {earliestExpInfo && (
@@ -657,15 +772,26 @@ const App: React.FC = () => {
                       </div>
                     )}
 
-                    <div className="bg-slate-50 p-8 rounded-[2.5rem] border-2 border-slate-100 shadow-inner">
-                        <label className="text-[10px] font-black text-slate-400 mb-3 uppercase block tracking-widest text-center">ชื่อผู้ป่วย / หน่วยงานรับสินค้า</label>
-                        <input 
-                          type="text" 
-                          placeholder="ระบุชื่อ-นามสกุล หรือ รหัสหน่วย" 
-                          className="w-full p-6 bg-white border-2 border-slate-200 rounded-3xl outline-none focus:ring-4 focus:ring-red-100 font-black text-blue-900 text-center shadow-sm"
-                          value={patientName}
-                          onChange={e => setPatientName(e.target.value)}
-                        />
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                       <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
+                          <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Batch Number (พิมพ์เลข Batch)</p>
+                          <input 
+                            className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400" 
+                            value={scanResult.batchNo}
+                            placeholder="ระบุ Batch ที่ต้องการจ่าย"
+                            onChange={e => setScanResult({...scanResult, batchNo: e.target.value})}
+                          />
+                       </div>
+                       <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
+                          <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">ชื่อผู้ป่วย / หน่วยงานรับสินค้า</p>
+                          <input 
+                            type="text" 
+                            placeholder="ระบุชื่อ-นามสกุล หรือ รหัสหน่วย" 
+                            className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400"
+                            value={patientName}
+                            onChange={e => setPatientName(e.target.value)}
+                          />
+                       </div>
                     </div>
 
                     <div className="bg-slate-100 p-8 rounded-[2.5rem] text-center flex flex-col items-center">
@@ -691,9 +817,12 @@ const App: React.FC = () => {
           <div className="space-y-8 pb-32">
             {!currentUser ? <LoginRequired /> : (
               <>
-                <div className="bg-white p-8 rounded-[3rem] border-t-8 border-purple-600 shadow-sm">
-                  <h2 className="text-2xl font-black text-blue-900 mb-6">ลงทะเบียน Master Data สินค้า</h2>
+                <div className="bg-white p-8 rounded-[3rem] border-t-8 border-purple-600 shadow-sm flex flex-col gap-6">
+                  <h2 className="text-2xl font-black text-blue-900 mb-0">ลงทะเบียน Master Data สินค้า</h2>
                   <Scanner label="สแกนเพื่อเริ่มลงข้อมูล" onScan={handleRegisterScan} isLoading={isLoading} />
+                  <button onClick={startManualRegistration} className="w-full py-4 bg-slate-50 border-2 border-slate-100 rounded-[2rem] text-purple-600 font-black text-sm shadow-sm hover:bg-slate-100 transition-all">
+                    ⌨️ ไม่มีรูป/กล้องเสีย: กรอกข้อมูล Master Data เอง
+                  </button>
                 </div>
 
                 {scanResult && (
@@ -705,12 +834,12 @@ const App: React.FC = () => {
                     )}
                     <div className="space-y-6">
                       <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                        <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">ชื่อเรียกภาษาไทย</p>
-                        <input className="w-full bg-transparent font-black text-blue-900 outline-none text-xl border-b-2 border-slate-200 focus:border-emerald-500 transition-all" value={scanResult.thaiName} onChange={e => setScanResult({...scanResult, thaiName: e.target.value})} />
+                        <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">ชื่อเรียกภาษาไทย (ห้ามเว้นว่าง)</p>
+                        <input className="w-full bg-transparent font-black text-blue-900 outline-none text-xl border-b-2 border-slate-200 focus:border-emerald-500 transition-all" placeholder="เช่น น้ำยา PD สีเหลือง" value={scanResult.thaiName} onChange={e => setScanResult({...scanResult, thaiName: e.target.value})} />
                       </div>
                       <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
                         <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">ผู้ผลิต / แบรนด์</p>
-                        <input className="w-full bg-transparent font-black text-blue-900 outline-none text-base border-b-2 border-slate-200 focus:border-emerald-500 transition-all" value={scanResult.manufacturer} onChange={e => setScanResult({...scanResult, manufacturer: e.target.value})} />
+                        <input className="w-full bg-transparent font-black text-blue-900 outline-none text-base border-b-2 border-slate-200 focus:border-emerald-500 transition-all" placeholder="ระบุผู้ผลิต" value={scanResult.manufacturer} onChange={e => setScanResult({...scanResult, manufacturer: e.target.value})} />
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
@@ -723,7 +852,7 @@ const App: React.FC = () => {
                         </div>
                       </div>
                     </div>
-                    <button disabled={isLoading} onClick={executeRegistration} className="w-full py-7 bg-emerald-600 text-white font-black rounded-[2rem] shadow-2xl shadow-emerald-900/20 active:scale-[0.98] transition-all text-lg">
+                    <button disabled={isLoading || !scanResult.thaiName.trim()} onClick={executeRegistration} className="w-full py-7 bg-emerald-600 text-white font-black rounded-[2rem] shadow-2xl shadow-emerald-900/20 active:scale-[0.98] transition-all text-lg disabled:bg-slate-300">
                       {isLoading ? 'กำลังบันทึก...' : 'บันทึกข้อมูลหลักสินค้า'}
                     </button>
                   </div>
@@ -733,7 +862,7 @@ const App: React.FC = () => {
 
             <div className="space-y-4">
               <div className="px-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <h3 className="text-xl font-black text-blue-900">สินค้าในระบบทั้งหมด</h3>
+                <h3 className="text-xl font-black text-blue-900 text-blue-900">สินค้าในระบบทั้งหมด</h3>
                 <div className="relative">
                   <input type="text" placeholder="🔍 ค้นหาชื่อสินค้า..." className="p-4 bg-white border border-slate-200 rounded-2xl text-sm font-black text-blue-900 outline-none focus:ring-4 focus:ring-purple-50 w-full md:w-64 shadow-sm" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
                 </div>
@@ -745,7 +874,7 @@ const App: React.FC = () => {
                         {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl text-blue-900">📦</span>}
                       </div>
                       <div>
-                        <p className="font-black text-blue-900 leading-tight">{p.thai_name}</p>
+                        <p className="font-black text-blue-900 leading-tight text-blue-900">{p.thai_name}</p>
                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mt-1">{(p.manufacturer || 'Unknown')}</p>
                         <div className="flex items-center gap-3 mt-2">
                           <span className="text-[9px] font-black bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full border border-purple-100">Min: {p.min_stock || 0}</span>
@@ -770,11 +899,11 @@ const App: React.FC = () => {
             
             <div className="bg-white p-10 rounded-[3rem] shadow-sm border border-slate-100 space-y-8">
               <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest">Supabase Project URL</label>
+                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest text-slate-400">Supabase Project URL</label>
                   <input className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-3xl font-mono text-sm text-blue-900 font-black" placeholder="https://..." value={sbConfig.url} onChange={e => setSbConfig({...sbConfig, url: e.target.value})} />
               </div>
               <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest">Supabase Anon Key</label>
+                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest text-slate-400">Supabase Anon Key</label>
                   <textarea className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-3xl font-mono text-[11px] h-32 text-blue-900 font-black" placeholder="eyJhbG..." value={sbConfig.key} onChange={e => setSbConfig({...sbConfig, key: e.target.value})} />
               </div>
               
@@ -794,10 +923,10 @@ const App: React.FC = () => {
       {error && (
         <div className="fixed bottom-28 left-4 right-4 bg-red-600 text-white p-6 rounded-[2rem] shadow-2xl z-[800] flex items-center justify-between font-black animate-in slide-in-from-bottom-4">
           <div className="flex items-center gap-4">
-            <span className="text-2xl">⚠️</span>
-            <span className="text-xs leading-tight">{error}</span>
+            <span className="text-2xl text-white">⚠️</span>
+            <span className="text-xs leading-tight text-white">{error}</span>
           </div>
-          <button onClick={() => setError(null)} className="bg-white/20 p-3 rounded-2xl text-[10px] font-black uppercase">ปิด</button>
+          <button onClick={() => setError(null)} className="bg-white/20 p-3 rounded-2xl text-[10px] font-black uppercase text-white">ปิด</button>
         </div>
       )}
     </Layout>
