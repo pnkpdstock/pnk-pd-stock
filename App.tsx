@@ -443,7 +443,7 @@ const App: React.FC = () => {
       setDuplicateBatchInfo(null); 
       setDuplicateProductWarning(null); 
       setIsManualSelecting(false);
-    }}>
+    }} currentUser={currentUser}>
       
       {/* Dropdown Selection for Potential Matches */}
       {(potentialMatches.length > 1 && !matchedProduct) && (
@@ -541,7 +541,7 @@ const App: React.FC = () => {
           <div className="bg-white w-full max-w-sm rounded-[3rem] p-8 space-y-6 shadow-2xl">
             <div className="text-center">
               <div className="w-24 h-24 bg-blue-50 text-blue-900 rounded-full flex items-center justify-center mx-auto text-4xl font-black mb-6 shadow-inner">{loginAttemptUser.firstName[0]}</div>
-              <h3 className="text-2xl font-black text-blue-900 text-blue-900">ระบุรหัสผ่าน</h3>
+              <h3 className="text-2xl font-black text-blue-900">ระบุรหัสผ่าน</h3>
               <p className="text-sm font-bold text-slate-400 mt-1">คุณ {loginAttemptUser.firstName} กรุณายืนยันตัวตน</p>
             </div>
             <input 
@@ -862,7 +862,7 @@ const App: React.FC = () => {
 
             <div className="space-y-4">
               <div className="px-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <h3 className="text-xl font-black text-blue-900 text-blue-900">สินค้าในระบบทั้งหมด</h3>
+                <h3 className="text-xl font-black text-blue-900">สินค้าในระบบทั้งหมด</h3>
                 <div className="relative">
                   <input type="text" placeholder="🔍 ค้นหาชื่อสินค้า..." className="p-4 bg-white border border-slate-200 rounded-2xl text-sm font-black text-blue-900 outline-none focus:ring-4 focus:ring-purple-50 w-full md:w-64 shadow-sm" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
                 </div>
@@ -874,7 +874,7 @@ const App: React.FC = () => {
                         {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl text-blue-900">📦</span>}
                       </div>
                       <div>
-                        <p className="font-black text-blue-900 leading-tight text-blue-900">{p.thai_name}</p>
+                        <p className="font-black text-blue-900 leading-tight">{p.thai_name}</p>
                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mt-1">{(p.manufacturer || 'Unknown')}</p>
                         <div className="flex items-center gap-3 mt-2">
                           <span className="text-[9px] font-black bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full border border-purple-100">Min: {p.min_stock || 0}</span>
@@ -882,6 +882,107 @@ const App: React.FC = () => {
                       </div>
                     </div>
                 ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeView === View.RECEIPT_HISTORY && (
+          <div className="space-y-8 pb-32">
+            <div className="bg-purple-900 p-10 rounded-[3rem] text-white shadow-xl">
+              <h2 className="text-3xl font-black leading-none text-white">ประวัติการรับสินค้า</h2>
+              <p className="text-xs font-bold text-purple-200 uppercase tracking-[0.2em] mt-3">Receipt Log</p>
+            </div>
+            
+            <div className="bg-white rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-50/50">
+                    <tr>
+                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">สินค้า</th>
+                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">Batch/วันหมดอายุ</th>
+                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest text-center">จำนวน</th>
+                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">ผู้บันทึก/วันที่</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {receiptHistory.length > 0 ? receiptHistory.map((item) => (
+                      <tr key={item.id} className="hover:bg-slate-50/50 transition-all">
+                        <td className="px-6 py-4">
+                          <div className="font-black text-blue-900 text-sm leading-tight">{item.thai_name}</div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="text-[10px] font-black text-slate-500 uppercase">BATCH: {item.batch_no}</div>
+                          <div className="text-[10px] font-black text-red-600">EXP: {item.exp}</div>
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          <span className="px-3 py-1 bg-blue-50 text-blue-900 rounded-lg font-black text-xs">{item.quantity}</span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="text-[10px] font-black text-blue-900">@{item.processed_by}</div>
+                          <div className="text-[10px] font-bold text-slate-400">{new Date(item.created_at).toLocaleString('th-TH')}</div>
+                        </td>
+                      </tr>
+                    )) : (
+                      <tr>
+                        <td colSpan={4} className="py-24 text-center">
+                          <p className="text-slate-300 font-black italic">ไม่มีประวัติการรับเข้า</p>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeView === View.RELEASE_HISTORY && (
+          <div className="space-y-8 pb-32">
+            <div className="bg-red-900 p-10 rounded-[3rem] text-white shadow-xl">
+              <h2 className="text-3xl font-black leading-none text-white">ประวัติการจ่ายสินค้า</h2>
+              <p className="text-xs font-bold text-red-200 uppercase tracking-[0.2em] mt-3">Release Log</p>
+            </div>
+            
+            <div className="bg-white rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-50/50">
+                    <tr>
+                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">สินค้า/ผู้ป่วย</th>
+                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">Batch/EXP</th>
+                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest text-center">จำนวน</th>
+                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">ผู้บันทึก/วันที่</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {releaseHistory.length > 0 ? releaseHistory.map((item) => (
+                      <tr key={item.id} className="hover:bg-slate-50/50 transition-all">
+                        <td className="px-6 py-4">
+                          <div className="font-black text-blue-900 text-sm leading-tight">{item.thai_name}</div>
+                          <div className="text-[10px] font-black text-purple-600 mt-1 uppercase">TO: {item.patient_name}</div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="text-[10px] font-black text-slate-500 uppercase">BATCH: {item.batch_no}</div>
+                          <div className="text-[10px] font-black text-red-600">EXP: {item.exp}</div>
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          <span className="px-3 py-1 bg-red-50 text-red-600 rounded-lg font-black text-xs">{item.quantity}</span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="text-[10px] font-black text-blue-900">@{item.processed_by}</div>
+                          <div className="text-[10px] font-bold text-slate-400">{new Date(item.created_at).toLocaleString('th-TH')}</div>
+                        </td>
+                      </tr>
+                    )) : (
+                      <tr>
+                        <td colSpan={4} className="py-24 text-center">
+                          <p className="text-slate-300 font-black italic">ไม่มีประวัติการจ่ายออก</p>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>

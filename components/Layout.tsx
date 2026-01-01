@@ -1,14 +1,15 @@
 
 import React from 'react';
-import { View } from '../types';
+import { View, User } from '../types';
 
 interface LayoutProps {
   children: React.ReactNode;
   activeView: View;
   onViewChange: (view: View) => void;
+  currentUser: User | null;
 }
 
-export const Layout: React.FC<LayoutProps> = ({ children, activeView, onViewChange }) => {
+export const Layout: React.FC<LayoutProps> = ({ children, activeView, onViewChange, currentUser }) => {
   // กรองเหลือเพียงเมนูหลักที่แถบด้านล่าง
   const navItems = [
     { id: View.INVENTORY, label: 'สต๊อกคงเหลือ', icon: '📊' },
@@ -29,7 +30,9 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeView, onViewChan
         <div className="max-w-5xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
           <div onClick={() => onViewChange(View.INVENTORY)} className="cursor-pointer text-center md:text-left">
             <h1 className="text-xl font-black tracking-tight leading-none">PNK_PD Online Stock</h1>
-            <div className="text-[10px] font-bold opacity-80 uppercase tracking-wider mt-1">Smart Inventory System</div>
+            <div className="text-[10px] font-bold opacity-80 uppercase tracking-wider mt-1">
+              Smart Inventory System {currentUser ? `| USER: ${currentUser.firstName}` : ''}
+            </div>
           </div>
           
           <div className="flex items-center gap-1 md:gap-2">
