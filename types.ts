@@ -11,6 +11,7 @@ export interface Product {
   id: string;
   thai_name: string;
   english_name: string;
+  search_name: string; // เพิ่มฟิลด์สำหรับชื่อค้นหา
   manufacturer: string;
   contact_number?: string;
   min_stock?: number;
@@ -62,6 +63,7 @@ export interface ReleaseHistory {
 export interface LabelExtractionResult {
   thaiName: string;
   englishName: string;
+  searchName?: string; // เพิ่มใน result ด้วย
   batchNo: string;
   mfd: string;
   exp: string;

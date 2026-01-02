@@ -44,6 +44,9 @@ const App: React.FC = () => {
   const [isManualSelecting, setIsManualSelecting] = useState(false);
   const [manualProductSearch, setManualProductSearch] = useState('');
 
+  // State for editing existing product
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
+
   useEffect(() => {
     const saved = localStorage.getItem('supabase_config');
     if (saved) {
@@ -84,6 +87,22 @@ const App: React.FC = () => {
       setError("เกิดข้อผิดพลาด: " + (err.message || "Cloud Error"));
     } finally {
       setIsDataLoading(false);
+    }
+  };
+
+  const handleRunMigration = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      // ลองรัน migration
+      await storageService.migrateDatabase();
+      showSuccess("อัปเดตฐานข้อมูลสำเร็จ! (search_name added)");
+      loadData();
+    } catch (err: any) {
+      // ถ้าพัง ให้แจ้ง SQL เพื่อรันเอง
+      setError(err.message || "กรุณารัน SQL: ALTER TABLE products ADD COLUMN search_name TEXT; ใน Supabase SQL Editor");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -166,6 +185,7 @@ const App: React.FC = () => {
     return registeredProducts.filter(p => {
       const pThai = normalize(p.thai_name);
       const pEng = normalize(p.english_name);
+      const pSearch = normalize(p.search_name);
       
       const prefixLength = 10;
       const thaiPrefixMatch = normSThai.length >= prefixLength && pThai.length >= prefixLength && 
@@ -176,8 +196,9 @@ const App: React.FC = () => {
 
       const thaiContains = (normSThai && pThai.includes(normSThai)) || (normSThai && pThai.length > 0 && normSThai.includes(pThai));
       const engContains = (normSEng && pEng.includes(normSEng)) || (normSEng && pEng.length > 0 && normSEng.includes(pEng));
+      const searchContains = (normSThai && pSearch.includes(normSThai)) || (normSEng && pSearch.includes(normSEng));
 
-      return thaiPrefixMatch || engPrefixMatch || thaiContains || engContains;
+      return thaiPrefixMatch || engPrefixMatch || thaiContains || engContains || searchContains;
     });
   };
 
@@ -186,6 +207,7 @@ const App: React.FC = () => {
     setIsLoading(true);
     setError(null);
     setDuplicateProductWarning(null);
+    setEditingProductId(null);
     try {
       const data = await extractLabelInfo(image);
       const finalThaiName = (data.thaiName || "").trim() === "" ? (data.englishName || "").trim() : data.thaiName;
@@ -206,7 +228,7 @@ const App: React.FC = () => {
         });
       }
 
-      setScanResult({ ...data, thaiName: finalThaiName, image: image });
+      setScanResult({ ...data, thaiName: finalThaiName, image: image, searchName: '' });
       setTempContact('');
       setTempMinStock(0);
     } catch (err: any) {
@@ -217,9 +239,11 @@ const App: React.FC = () => {
   };
 
   const startManualRegistration = () => {
+    setEditingProductId(null);
     setScanResult({
       thaiName: '',
       englishName: '',
+      searchName: '',
       batchNo: '',
       mfd: '',
       exp: '',
@@ -229,20 +253,47 @@ const App: React.FC = () => {
     setTempMinStock(0);
   };
 
+  const selectProductForEdit = (product: Product) => {
+    setEditingProductId(product.id);
+    setScanResult({
+      thaiName: product.thai_name,
+      englishName: product.english_name,
+      searchName: product.search_name || '',
+      batchNo: '',
+      mfd: '',
+      exp: '',
+      manufacturer: product.manufacturer,
+      image: product.photo
+    });
+    setTempContact(product.contact_number || '');
+    setTempMinStock(product.min_stock || 0);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   const executeRegistration = async () => {
     if (!currentUser || !scanResult) return;
     setIsLoading(true);
     try {
-      await storageService.registerProduct({
+      const productPayload = {
         thai_name: scanResult.thaiName,
         english_name: scanResult.englishName,
+        search_name: scanResult.searchName || '',
         manufacturer: scanResult.manufacturer,
         contact_number: tempContact,
         min_stock: tempMinStock,
         photo: scanResult.image
-      }, currentUser.username);
+      };
+
+      if (editingProductId) {
+        await storageService.updateProduct(editingProductId, productPayload);
+        showSuccess("อัปเดตข้อมูลสินค้าสำเร็จ");
+      } else {
+        await storageService.registerProduct(productPayload, currentUser.username);
+        showSuccess("ลงทะเบียนสินค้าสำเร็จ");
+      }
+      
       setScanResult(null);
-      showSuccess("ลงทะเบียนสินค้าสำเร็จ");
+      setEditingProductId(null);
       loadData();
     } catch (err: any) {
       setError(err.message);
@@ -414,12 +465,22 @@ const App: React.FC = () => {
 
   const filteredProducts = useMemo(() => {
     if (!searchQuery) return registeredProducts;
-    return registeredProducts.filter(p => (p.thai_name || "").toLowerCase().includes(searchQuery.toLowerCase()) || (p.english_name || "").toLowerCase().includes(searchQuery.toLowerCase()));
+    const lowerQuery = searchQuery.toLowerCase();
+    return registeredProducts.filter(p => 
+      (p.thai_name || "").toLowerCase().includes(lowerQuery) || 
+      (p.english_name || "").toLowerCase().includes(lowerQuery) ||
+      (p.search_name || "").toLowerCase().includes(lowerQuery)
+    );
   }, [registeredProducts, searchQuery]);
 
   const filteredManualProducts = useMemo(() => {
     if (!manualProductSearch) return registeredProducts;
-    return registeredProducts.filter(p => (p.thai_name || "").toLowerCase().includes(manualProductSearch.toLowerCase()) || (p.english_name || "").toLowerCase().includes(manualProductSearch.toLowerCase()));
+    const lowerQuery = manualProductSearch.toLowerCase();
+    return registeredProducts.filter(p => 
+      (p.thai_name || "").toLowerCase().includes(lowerQuery) || 
+      (p.english_name || "").toLowerCase().includes(lowerQuery) ||
+      (p.search_name || "").toLowerCase().includes(lowerQuery)
+    );
   }, [registeredProducts, manualProductSearch]);
 
   const LoginRequired = () => (
@@ -443,6 +504,7 @@ const App: React.FC = () => {
       setDuplicateBatchInfo(null); 
       setDuplicateProductWarning(null); 
       setIsManualSelecting(false);
+      setEditingProductId(null);
     }} currentUser={currentUser}>
       
       {/* Dropdown Selection for Potential Matches */}
@@ -460,12 +522,13 @@ const App: React.FC = () => {
                   onClick={() => activeView === View.STOCK_IN ? selectItemForStockIn(p, scanResult!) : selectItemForStockOut(p, scanResult!)}
                   className="w-full text-left p-5 bg-white border-2 border-slate-100 rounded-3xl hover:border-blue-500 hover:shadow-lg transition-all flex items-center gap-4 group"
                 >
-                  <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center border group-hover:border-blue-200 overflow-hidden shrink-0">
+                  <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center border group-hover:border-blue-200 overflow-hidden shrink-0 shadow-inner">
                     {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl text-blue-900">📦</span>}
                   </div>
                   <div className="flex-1 overflow-hidden">
                     <p className="font-black text-blue-900 text-base group-hover:text-blue-700 truncate">{p.thai_name}</p>
                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mt-0.5">{(p.manufacturer || 'ไม่ระบุผู้ผลิต')}</p>
+                    {p.search_name && <p className="text-[9px] font-black text-purple-600 uppercase mt-0.5">AKA: {p.search_name}</p>}
                   </div>
                 </button>
               ))}
@@ -477,19 +540,19 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Manual Product Selection Overlay (for Stock In/Out) */}
+      {/* Manual Product Selection Overlay */}
       {isManualSelecting && (
         <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[550] flex items-center justify-center p-4 animate-in fade-in">
           <div className="bg-white w-full max-w-lg rounded-[2.5rem] overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
-            <div className="p-8 bg-purple-600 text-white">
-              <h3 className="font-black text-xl text-white">เลือกสินค้าเพื่อ{activeView === View.STOCK_IN ? 'รับเข้า' : 'จ่ายออก'}</h3>
-              <p className="text-[10px] font-bold text-purple-100 uppercase tracking-widest mt-1">กรุณาเลือกสินค้าจากรายการ Master Data</p>
+            <div className="p-8 bg-blue-900 text-white">
+              <h3 className="font-black text-xl text-white">ค้นหาสินค้า (Manual Entry)</h3>
+              <p className="text-[10px] font-bold text-blue-100 uppercase tracking-widest mt-1">ค้นด้วยชื่อจริง หรือ "ชื่อค้นหา"</p>
             </div>
             <div className="p-6 border-b border-slate-100">
                <input 
                  type="text" 
-                 placeholder="🔍 ค้นหาด้วยชื่อสินค้า..." 
-                 className="w-full p-4 bg-slate-50 border-2 border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-purple-100 font-black text-blue-900"
+                 placeholder="🔍 พิมพ์ชื่อสินค้า หรือ ชื่อค้นหา..." 
+                 className="w-full p-4 bg-slate-50 border-2 border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-blue-100 font-black text-blue-900"
                  value={manualProductSearch}
                  onChange={e => setManualProductSearch(e.target.value)}
                  autoFocus
@@ -503,6 +566,7 @@ const App: React.FC = () => {
                     const emptyResult = {
                       thaiName: p.thai_name,
                       englishName: p.english_name,
+                      searchName: p.search_name,
                       batchNo: '',
                       mfd: '',
                       exp: '',
@@ -510,23 +574,20 @@ const App: React.FC = () => {
                     };
                     activeView === View.STOCK_IN ? selectItemForStockIn(p, emptyResult) : selectItemForStockOut(p, emptyResult);
                   }}
-                  className="w-full text-left p-5 bg-white border-2 border-slate-100 rounded-3xl hover:border-purple-500 hover:shadow-lg transition-all flex items-center gap-4 group"
+                  className="w-full text-left p-5 bg-white border-2 border-slate-100 rounded-3xl hover:border-blue-500 hover:shadow-lg transition-all flex items-center gap-4 group"
                 >
-                  <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center border group-hover:border-purple-200 overflow-hidden shrink-0">
-                    {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl text-purple-600">📦</span>}
+                  <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center border group-hover:border-blue-200 overflow-hidden shrink-0 shadow-inner">
+                    {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl text-blue-900">📦</span>}
                   </div>
                   <div className="flex-1 overflow-hidden">
-                    <p className="font-black text-blue-900 text-base group-hover:text-purple-700 truncate">{p.thai_name}</p>
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mt-0.5">{(p.manufacturer || 'ไม่ระบุผู้ผลิต')}</p>
+                    <p className="font-black text-blue-900 text-base group-hover:text-blue-700 truncate">{p.thai_name}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">{(p.manufacturer || 'ไม่ระบุผู้ผลิต')}</p>
+                      {p.search_name && <span className="text-[9px] font-black bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded border border-blue-100">{p.search_name}</span>}
+                    </div>
                   </div>
                 </button>
               ))}
-              {filteredManualProducts.length === 0 && (
-                <div className="text-center py-10">
-                  <p className="text-slate-400 font-black">ไม่พบข้อมูลสินค้าที่ค้นหา</p>
-                  <button onClick={() => setActiveView(View.REGISTRATION)} className="mt-4 text-purple-600 font-black underline">ไปหน้าลงทะเบียน Master Data</button>
-                </div>
-              )}
             </div>
             <div className="p-6 bg-white border-t border-slate-100 text-center">
               <button onClick={() => setIsManualSelecting(false)} className="text-sm font-black text-slate-400 hover:text-red-500 transition-colors">ยกเลิก</button>
@@ -563,7 +624,7 @@ const App: React.FC = () => {
 
       {successMessage && <div className="fixed top-24 left-4 right-4 bg-emerald-600 text-white p-6 rounded-[2rem] shadow-2xl z-[700] text-center font-black animate-in slide-in-from-top-4 duration-500">{successMessage}</div>}
 
-      {/* Main Views Container */}
+      {/* Main Views */}
       <div className="animate-in fade-in duration-500">
         {activeView === View.USERS && (
           <div className="space-y-8 pb-32">
@@ -673,7 +734,7 @@ const App: React.FC = () => {
                 <div className="flex flex-col gap-4">
                   <Scanner label="สแกนฉลากเพื่อรับเข้า" onScan={handleStockIn} isLoading={isLoading} />
                   <button onClick={startManualStockIn} className="w-full py-4 bg-white border-2 border-slate-100 rounded-[2rem] text-blue-900 font-black text-sm shadow-sm hover:bg-slate-50 transition-all">
-                    ⌨️ กรณีกล้องเสีย/ไม่สำเร็จ: กรอกข้อมูลเอง (Manual)
+                    ⌨️ กรอกด้วยคีย์บอร์ด / ค้นหาด้วยชื่อค้นหา
                   </button>
                 </div>
                 
@@ -687,33 +748,14 @@ const App: React.FC = () => {
                         <button onClick={() => {setMatchedProduct(null); setDuplicateBatchInfo(null); startManualStockIn();}} className="text-[11px] font-black text-blue-900 bg-white px-4 py-2 rounded-xl shadow-sm hover:shadow-md transition-all">เปลี่ยนรายการ</button>
                     </div>
 
-                    {duplicateBatchInfo && (
-                      <div className="bg-amber-50 border-2 border-amber-200 p-6 rounded-[2rem] flex items-start gap-4">
-                          <span className="text-2xl shrink-0">⚠️</span>
-                          <div>
-                            <p className="text-sm font-black text-amber-900">ตรวจพบ BATCH ซ้ำในประวัติ!</p>
-                            <p className="text-[11px] font-bold text-amber-800 leading-relaxed mt-1">Batch {scanResult.batchNo} เคยรับเข้าแล้วเมื่อ {duplicateBatchInfo.date} จำนวน {duplicateBatchInfo.qty} ชิ้น</p>
-                          </div>
-                      </div>
-                    )}
-
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
                           <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Batch Number</p>
-                          <input 
-                            className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-blue-400" 
-                            value={scanResult.batchNo}
-                            onChange={e => setScanResult({...scanResult, batchNo: e.target.value})}
-                          />
+                          <input className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-blue-400" value={scanResult.batchNo} onChange={e => setScanResult({...scanResult, batchNo: e.target.value})} />
                         </div>
                         <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
                           <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Expiry Date (หมดอายุ)</p>
-                          <input 
-                            type="date"
-                            className="w-full bg-transparent font-black text-red-600 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400" 
-                            value={scanResult.exp}
-                            onChange={e => setScanResult({...scanResult, exp: e.target.value})}
-                          />
+                          <input type="date" className="w-full bg-transparent font-black text-red-600 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400" value={scanResult.exp} onChange={e => setScanResult({...scanResult, exp: e.target.value})} />
                         </div>
                     </div>
 
@@ -748,7 +790,7 @@ const App: React.FC = () => {
                 <div className="flex flex-col gap-4">
                   <Scanner label="สแกนฉลากเพื่อจ่ายออก" onScan={handleStockOutScan} isLoading={isLoading} />
                   <button onClick={startManualStockOut} className="w-full py-4 bg-white border-2 border-slate-100 rounded-[2rem] text-blue-900 font-black text-sm shadow-sm hover:bg-slate-50 transition-all">
-                    ⌨️ กรณีกล้องเสีย/ไม่สำเร็จ: ค้นหาสินค้าและกรอกเอง
+                    ⌨️ กรอกด้วยคีย์บอร์ด / ค้นหาด้วยชื่อค้นหา
                   </button>
                 </div>
 
@@ -762,35 +804,14 @@ const App: React.FC = () => {
                         <button onClick={() => {setMatchedProduct(null); setEarliestExpInfo(null); startManualStockOut();}} className="text-[11px] font-black text-blue-900 bg-white px-4 py-2 rounded-xl shadow-sm">เปลี่ยน</button>
                     </div>
 
-                    {earliestExpInfo && (
-                      <div className="bg-amber-50 border-2 border-amber-200 p-6 rounded-[2rem] flex items-start gap-4">
-                          <span className="text-2xl shrink-0">⌛</span>
-                          <div>
-                            <p className="text-sm font-black text-amber-900">ตรวจพบ Batch ใกล้หมดอายุกว่า!</p>
-                            <p className="text-[11px] font-bold text-amber-800 leading-relaxed mt-1">มี Batch ที่หมดอายุวันที่ {earliestExpInfo.exp} ({earliestExpInfo.batch}) ควรจ่ายออกก่อนตามหลัก FEFO</p>
-                          </div>
-                      </div>
-                    )}
-
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                        <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
                           <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Batch Number (พิมพ์เลข Batch)</p>
-                          <input 
-                            className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400" 
-                            value={scanResult.batchNo}
-                            placeholder="ระบุ Batch ที่ต้องการจ่าย"
-                            onChange={e => setScanResult({...scanResult, batchNo: e.target.value})}
-                          />
+                          <input className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400" value={scanResult.batchNo} placeholder="ระบุ Batch ที่ต้องการจ่าย" onChange={e => setScanResult({...scanResult, batchNo: e.target.value})} />
                        </div>
                        <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
                           <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">ชื่อผู้ป่วย / หน่วยงานรับสินค้า</p>
-                          <input 
-                            type="text" 
-                            placeholder="ระบุชื่อ-นามสกุล หรือ รหัสหน่วย" 
-                            className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400"
-                            value={patientName}
-                            onChange={e => setPatientName(e.target.value)}
-                          />
+                          <input type="text" placeholder="ระบุชื่อ-นามสกุล หรือ รหัสหน่วย" className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400" value={patientName} onChange={e => setPatientName(e.target.value)} />
                        </div>
                     </div>
 
@@ -818,24 +839,27 @@ const App: React.FC = () => {
             {!currentUser ? <LoginRequired /> : (
               <>
                 <div className="bg-white p-8 rounded-[3rem] border-t-8 border-purple-600 shadow-sm flex flex-col gap-6">
-                  <h2 className="text-2xl font-black text-blue-900 mb-0">ลงทะเบียน Master Data สินค้า</h2>
+                  <h2 className="text-2xl font-black text-blue-900 mb-0">
+                    {editingProductId ? '📝 แก้ไขข้อมูลสินค้า Master Data' : 'ลงทะเบียน Master Data สินค้า'}
+                  </h2>
                   <Scanner label="สแกนเพื่อเริ่มลงข้อมูล" onScan={handleRegisterScan} isLoading={isLoading} />
                   <button onClick={startManualRegistration} className="w-full py-4 bg-slate-50 border-2 border-slate-100 rounded-[2rem] text-purple-600 font-black text-sm shadow-sm hover:bg-slate-100 transition-all">
-                    ⌨️ ไม่มีรูป/กล้องเสีย: กรอกข้อมูล Master Data เอง
+                    ⌨️ {editingProductId ? 'กรอกข้อมูลที่ต้องการแก้ไข' : 'กรอกข้อมูล Master Data เอง'}
                   </button>
                 </div>
 
                 {scanResult && (
                   <div className="bg-white p-10 rounded-[3rem] shadow-2xl border-t-8 border-emerald-500 space-y-8 animate-in slide-in-from-bottom-6">
-                    {duplicateProductWarning && (
-                      <div className="bg-amber-50 border-2 border-amber-200 p-6 rounded-[2rem] text-sm font-bold text-amber-800">
-                        ⚠️ พบรายการใกล้เคียงในระบบ: <span className="font-black text-blue-900">{duplicateProductWarning.name}</span>
-                      </div>
-                    )}
                     <div className="space-y-6">
-                      <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                        <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">ชื่อเรียกภาษาไทย (ห้ามเว้นว่าง)</p>
-                        <input className="w-full bg-transparent font-black text-blue-900 outline-none text-xl border-b-2 border-slate-200 focus:border-emerald-500 transition-all" placeholder="เช่น น้ำยา PD สีเหลือง" value={scanResult.thaiName} onChange={e => setScanResult({...scanResult, thaiName: e.target.value})} />
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
+                          <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">ชื่อเรียกภาษาไทย (ห้ามเว้นว่าง)</p>
+                          <input className="w-full bg-transparent font-black text-blue-900 outline-none text-xl border-b-2 border-slate-200 focus:border-emerald-500 transition-all" placeholder="เช่น น้ำยา PD สีเหลือง" value={scanResult.thaiName} onChange={e => setScanResult({...scanResult, thaiName: e.target.value})} />
+                        </div>
+                        <div className="bg-blue-50/50 p-6 rounded-3xl border border-blue-100">
+                          <p className="text-[10px] font-black text-blue-900/60 uppercase mb-2 tracking-widest">ชื่อค้นหา (Search Name)</p>
+                          <input className="w-full bg-transparent font-black text-blue-900 outline-none text-xl border-b-2 border-blue-200 focus:border-blue-500 transition-all" placeholder="เช่น สีเหลือง, เหลือง 1.5" value={scanResult.searchName} onChange={e => setScanResult({...scanResult, searchName: e.target.value})} />
+                        </div>
                       </div>
                       <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
                         <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">ผู้ผลิต / แบรนด์</p>
@@ -852,9 +876,12 @@ const App: React.FC = () => {
                         </div>
                       </div>
                     </div>
-                    <button disabled={isLoading || !scanResult.thaiName.trim()} onClick={executeRegistration} className="w-full py-7 bg-emerald-600 text-white font-black rounded-[2rem] shadow-2xl shadow-emerald-900/20 active:scale-[0.98] transition-all text-lg disabled:bg-slate-300">
-                      {isLoading ? 'กำลังบันทึก...' : 'บันทึกข้อมูลหลักสินค้า'}
-                    </button>
+                    <div className="flex gap-4">
+                      {editingProductId && <button onClick={() => {setEditingProductId(null); setScanResult(null);}} className="flex-1 py-7 bg-slate-100 text-slate-500 font-black rounded-[2rem] border border-slate-200 active:scale-[0.98] transition-all">ยกเลิกแก้ไข</button>}
+                      <button disabled={isLoading || !scanResult.thaiName.trim()} onClick={executeRegistration} className="flex-[2] py-7 bg-emerald-600 text-white font-black rounded-[2rem] shadow-2xl shadow-emerald-900/20 active:scale-[0.98] transition-all text-lg">
+                        {isLoading ? 'กำลังบันทึก...' : (editingProductId ? '💾 บันทึกการแก้ไขข้อมูล' : 'บันทึกข้อมูลหลักสินค้า')}
+                      </button>
+                    </div>
                   </div>
                 )}
               </>
@@ -862,22 +889,22 @@ const App: React.FC = () => {
 
             <div className="space-y-4">
               <div className="px-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <h3 className="text-xl font-black text-blue-900">สินค้าในระบบทั้งหมด</h3>
+                <h3 className="text-xl font-black text-blue-900">สินค้าในระบบทั้งหมด (คลิกเพื่อแก้ไข)</h3>
                 <div className="relative">
-                  <input type="text" placeholder="🔍 ค้นหาชื่อสินค้า..." className="p-4 bg-white border border-slate-200 rounded-2xl text-sm font-black text-blue-900 outline-none focus:ring-4 focus:ring-purple-50 w-full md:w-64 shadow-sm" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+                  <input type="text" placeholder="🔍 ค้นหาด้วยชื่อ หรือ ชื่อค้นหา..." className="p-4 bg-white border border-slate-200 rounded-2xl text-sm font-black text-blue-900 outline-none focus:ring-4 focus:ring-purple-50 w-full md:w-64 shadow-sm" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {filteredProducts.map((p) => (
-                    <div key={p.id} className="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm flex items-center gap-5 hover:border-purple-200 hover:shadow-md transition-all">
-                      <div className="w-16 h-16 rounded-2xl bg-slate-50 border border-slate-100 flex items-center justify-center overflow-hidden shrink-0">
+                    <div key={p.id} onClick={() => selectProductForEdit(p)} className={`bg-white p-6 rounded-[2.5rem] border-2 cursor-pointer shadow-sm flex items-center gap-5 transition-all ${editingProductId === p.id ? 'border-emerald-500 bg-emerald-50 shadow-md ring-4 ring-emerald-100' : 'border-slate-100 hover:border-purple-200 hover:shadow-md'}`}>
+                      <div className="w-16 h-16 rounded-2xl bg-white border border-slate-100 flex items-center justify-center overflow-hidden shrink-0 shadow-inner">
                         {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl text-blue-900">📦</span>}
                       </div>
-                      <div>
-                        <p className="font-black text-blue-900 leading-tight">{p.thai_name}</p>
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mt-1">{(p.manufacturer || 'Unknown')}</p>
-                        <div className="flex items-center gap-3 mt-2">
-                          <span className="text-[9px] font-black bg-purple-50 text-purple-600 px-2 py-0.5 rounded-full border border-purple-100">Min: {p.min_stock || 0}</span>
+                      <div className="flex-1 overflow-hidden">
+                        <p className="font-black text-blue-900 leading-tight truncate">{p.thai_name}</p>
+                        <div className="flex flex-wrap items-center gap-2 mt-1">
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">{(p.manufacturer || 'Unknown')}</p>
+                          {p.search_name && <span className="text-[9px] font-black bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full border border-purple-200">{p.search_name}</span>}
                         </div>
                       </div>
                     </div>
@@ -887,13 +914,13 @@ const App: React.FC = () => {
           </div>
         )}
 
+        {/* History Views */}
         {activeView === View.RECEIPT_HISTORY && (
           <div className="space-y-8 pb-32">
             <div className="bg-purple-900 p-10 rounded-[3rem] text-white shadow-xl">
               <h2 className="text-3xl font-black leading-none text-white">ประวัติการรับสินค้า</h2>
               <p className="text-xs font-bold text-purple-200 uppercase tracking-[0.2em] mt-3">Receipt Log</p>
             </div>
-            
             <div className="bg-white rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
@@ -906,30 +933,14 @@ const App: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {receiptHistory.length > 0 ? receiptHistory.map((item) => (
+                    {receiptHistory.map((item) => (
                       <tr key={item.id} className="hover:bg-slate-50/50 transition-all">
-                        <td className="px-6 py-4">
-                          <div className="font-black text-blue-900 text-sm leading-tight">{item.thai_name}</div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="text-[10px] font-black text-slate-500 uppercase">BATCH: {item.batch_no}</div>
-                          <div className="text-[10px] font-black text-red-600">EXP: {item.exp}</div>
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          <span className="px-3 py-1 bg-blue-50 text-blue-900 rounded-lg font-black text-xs">{item.quantity}</span>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="text-[10px] font-black text-blue-900">@{item.processed_by}</div>
-                          <div className="text-[10px] font-bold text-slate-400">{new Date(item.created_at).toLocaleString('th-TH')}</div>
-                        </td>
+                        <td className="px-6 py-4"><div className="font-black text-blue-900 text-sm leading-tight">{item.thai_name}</div></td>
+                        <td className="px-6 py-4"><div className="text-[10px] font-black text-slate-500">BATCH: {item.batch_no}</div><div className="text-[10px] font-black text-red-600">EXP: {item.exp}</div></td>
+                        <td className="px-6 py-4 text-center"><span className="px-3 py-1 bg-blue-50 text-blue-900 rounded-lg font-black text-xs">{item.quantity}</span></td>
+                        <td className="px-6 py-4"><div className="text-[10px] font-black text-blue-900">@{item.processed_by}</div><div className="text-[10px] font-bold text-slate-400">{new Date(item.created_at).toLocaleString('th-TH')}</div></td>
                       </tr>
-                    )) : (
-                      <tr>
-                        <td colSpan={4} className="py-24 text-center">
-                          <p className="text-slate-300 font-black italic">ไม่มีประวัติการรับเข้า</p>
-                        </td>
-                      </tr>
-                    )}
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -943,7 +954,6 @@ const App: React.FC = () => {
               <h2 className="text-3xl font-black leading-none text-white">ประวัติการจ่ายสินค้า</h2>
               <p className="text-xs font-bold text-red-200 uppercase tracking-[0.2em] mt-3">Release Log</p>
             </div>
-            
             <div className="bg-white rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
@@ -956,31 +966,14 @@ const App: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {releaseHistory.length > 0 ? releaseHistory.map((item) => (
+                    {releaseHistory.map((item) => (
                       <tr key={item.id} className="hover:bg-slate-50/50 transition-all">
-                        <td className="px-6 py-4">
-                          <div className="font-black text-blue-900 text-sm leading-tight">{item.thai_name}</div>
-                          <div className="text-[10px] font-black text-purple-600 mt-1 uppercase">TO: {item.patient_name}</div>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="text-[10px] font-black text-slate-500 uppercase">BATCH: {item.batch_no}</div>
-                          <div className="text-[10px] font-black text-red-600">EXP: {item.exp}</div>
-                        </td>
-                        <td className="px-6 py-4 text-center">
-                          <span className="px-3 py-1 bg-red-50 text-red-600 rounded-lg font-black text-xs">{item.quantity}</span>
-                        </td>
-                        <td className="px-6 py-4">
-                          <div className="text-[10px] font-black text-blue-900">@{item.processed_by}</div>
-                          <div className="text-[10px] font-bold text-slate-400">{new Date(item.created_at).toLocaleString('th-TH')}</div>
-                        </td>
+                        <td className="px-6 py-4"><div className="font-black text-blue-900 text-sm leading-tight">{item.thai_name}</div><div className="text-[10px] font-black text-purple-600 mt-1 uppercase">TO: {item.patient_name}</div></td>
+                        <td className="px-6 py-4"><div className="text-[10px] font-black text-slate-500">BATCH: {item.batch_no}</div><div className="text-[10px] font-black text-red-600">EXP: {item.exp}</div></td>
+                        <td className="px-6 py-4 text-center"><span className="px-3 py-1 bg-red-50 text-red-600 rounded-lg font-black text-xs">{item.quantity}</span></td>
+                        <td className="px-6 py-4"><div className="text-[10px] font-black text-blue-900">@{item.processed_by}</div><div className="text-[10px] font-bold text-slate-400">{new Date(item.created_at).toLocaleString('th-TH')}</div></td>
                       </tr>
-                    )) : (
-                      <tr>
-                        <td colSpan={4} className="py-24 text-center">
-                          <p className="text-slate-300 font-black italic">ไม่มีประวัติการจ่ายออก</p>
-                        </td>
-                      </tr>
-                    )}
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -991,30 +984,31 @@ const App: React.FC = () => {
         {activeView === View.SETTINGS && (
           <div className="space-y-8 pb-32">
             <div className="bg-slate-900 p-10 rounded-[3rem] text-white shadow-xl flex justify-between items-center">
-              <div>
-                <h2 className="text-3xl font-black leading-none text-white">การตั้งค่าคลาวด์</h2>
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em] mt-3">Supabase Integration</p>
-              </div>
+              <div><h2 className="text-3xl font-black leading-none text-white">การตั้งค่าคลาวด์</h2><p className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em] mt-3">Supabase Integration</p></div>
               {isConfigured && <span className="bg-emerald-500/20 text-emerald-400 px-4 py-2 rounded-full text-[11px] font-black border border-emerald-500/30">ONLINE 🟢</span>}
             </div>
             
             <div className="bg-white p-10 rounded-[3rem] shadow-sm border border-slate-100 space-y-8">
+              <div className="bg-amber-50 p-6 rounded-[2rem] border-2 border-amber-100 flex flex-col gap-4">
+                <div className="flex items-center gap-3"><span className="text-2xl">🛠️</span><p className="text-sm font-black text-amber-900 uppercase tracking-widest">Database Maintenance</p></div>
+                <p className="text-[11px] font-bold text-amber-800 leading-relaxed">หากคุณพบข้อผิดพลาด "search_name column not found" กรุณากดปุ่มด้านล่างเพื่ออัปเดตโครงสร้างฐานข้อมูล Supabase อัตโนมัติ</p>
+                <button onClick={handleRunMigration} disabled={isLoading} className="w-full py-4 bg-amber-600 text-white font-black rounded-2xl shadow-lg active:scale-95 transition-all text-sm">
+                  {isLoading ? 'กำลังประมวลผล...' : 'รัน Migration (เพิ่มช่องชื่อค้นหา)'}
+                </button>
+              </div>
+
               <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest text-slate-400">Supabase Project URL</label>
+                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest">Supabase Project URL</label>
                   <input className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-3xl font-mono text-sm text-blue-900 font-black" placeholder="https://..." value={sbConfig.url} onChange={e => setSbConfig({...sbConfig, url: e.target.value})} />
               </div>
               <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest text-slate-400">Supabase Anon Key</label>
+                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest">Supabase Anon Key</label>
                   <textarea className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-3xl font-mono text-[11px] h-32 text-blue-900 font-black" placeholder="eyJhbG..." value={sbConfig.key} onChange={e => setSbConfig({...sbConfig, key: e.target.value})} />
               </div>
               
-              <div className="flex flex-col gap-4">
-                  <button onClick={handleTestConnection} disabled={isTestingConnection} className="w-full py-5 bg-slate-100 text-slate-600 font-black rounded-[2rem] border-2 border-slate-200 active:scale-95 transition-all">
-                    {isTestingConnection ? 'กำลังทดสอบ...' : '🔍 ทดสอบการเชื่อมต่อ'}
-                  </button>
-                  <button onClick={handleSaveConfig} className="w-full py-6 bg-blue-900 text-white font-black rounded-[2rem] shadow-2xl shadow-blue-900/20 text-lg">
-                    💾 บันทึกและเริ่มใช้งานระบบ Cloud
-                  </button>
+              <div className="flex flex-col gap-4 pt-4">
+                  <button onClick={handleTestConnection} disabled={isTestingConnection} className="w-full py-5 bg-slate-100 text-slate-600 font-black rounded-[2rem] border-2 border-slate-200 active:scale-95 transition-all">🔍 ทดสอบการเชื่อมต่อ</button>
+                  <button onClick={handleSaveConfig} className="w-full py-6 bg-blue-900 text-white font-black rounded-[2rem] shadow-2xl shadow-blue-900/20 text-lg">💾 บันทึกและเริ่มใช้งานระบบ Cloud</button>
               </div>
             </div>
           </div>
@@ -1023,10 +1017,7 @@ const App: React.FC = () => {
 
       {error && (
         <div className="fixed bottom-28 left-4 right-4 bg-red-600 text-white p-6 rounded-[2rem] shadow-2xl z-[800] flex items-center justify-between font-black animate-in slide-in-from-bottom-4">
-          <div className="flex items-center gap-4">
-            <span className="text-2xl text-white">⚠️</span>
-            <span className="text-xs leading-tight text-white">{error}</span>
-          </div>
+          <div className="flex items-center gap-4"><span className="text-2xl text-white">⚠️</span><span className="text-xs leading-tight text-white">{error}</span></div>
           <button onClick={() => setError(null)} className="bg-white/20 p-3 rounded-2xl text-[10px] font-black uppercase text-white">ปิด</button>
         </div>
       )}
