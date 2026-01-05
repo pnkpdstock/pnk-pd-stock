@@ -1,156 +1,100 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, StockItem, LabelExtractionResult, Product, User, ReceiptHistory, ReleaseHistory } from './types';
+import { View, StockItem, LabelExtractionResult, Product, User, ReceiptHistory, ReleaseHistory, GuestRequest } from './types';
 import { Layout } from './components/Layout';
 import { Scanner } from './components/Scanner';
 import { extractLabelInfo } from './services/geminiService';
 import { storageService } from './services/storageService';
 
 const App: React.FC = () => {
-  const [activeView, setActiveView] = useState<View>(View.INVENTORY);
+  const [activeView, setActiveView] = useState<View>(View.GUEST_REQUEST);
   const [items, setItems] = useState<StockItem[]>([]);
   const [receiptHistory, setReceiptHistory] = useState<ReceiptHistory[]>([]);
   const [releaseHistory, setReleaseHistory] = useState<ReleaseHistory[]>([]);
+  const [guestRequests, setGuestRequests] = useState<GuestRequest[]>([]);
   const [registeredProducts, setRegisteredProducts] = useState<Product[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   
   const [isLoading, setIsLoading] = useState(false);
   const [isDataLoading, setIsDataLoading] = useState(false);
-  const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [scanResult, setScanResult] = useState<LabelExtractionResult | null>(null);
   const [matchedProduct, setMatchedProduct] = useState<Product | null>(null);
   const [potentialMatches, setPotentialMatches] = useState<Product[]>([]);
-  const [searchQuery, setSearchQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [inputQty, setInputQty] = useState<number>(1);
   const [patientName, setPatientName] = useState('');
 
-  const [earliestExpInfo, setEarliestExpInfo] = useState<{ exp: string, batch: string } | null>(null);
-  const [duplicateBatchInfo, setDuplicateBatchInfo] = useState<{ date: string, qty: number } | null>(null);
-  const [duplicateProductWarning, setDuplicateProductWarning] = useState<{ name: string, manufacturer: string } | null>(null);
   const [loginAttemptUser, setLoginAttemptUser] = useState<User | null>(null);
   const [loginPassword, setLoginPassword] = useState('');
 
-  const [newUser, setNewUser] = useState({ firstName: '', lastName: '', username: '', password: '' });
-  const [sbConfig, setSbConfig] = useState({ url: '', key: '' });
-  const [isConfigured, setIsConfigured] = useState(false);
-
+  const [newUser, setNewUser] = useState({ firstName: '', lastName: '', username: '', password: '', role: 'staff' as 'admin' | 'staff' });
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [isAddingUser, setIsAddingUser] = useState(false);
+  
   const [tempContact, setTempContact] = useState('');
   const [tempMinStock, setTempMinStock] = useState<number>(0);
-  
-  // State for manual selection
-  const [isManualSelecting, setIsManualSelecting] = useState(false);
-  const [manualProductSearch, setManualProductSearch] = useState('');
-
-  // State for editing existing product
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
 
+  // Search state for manual selection
+  const [manualSearchQuery, setManualSearchQuery] = useState('');
+  const [isManualMode, setIsManualMode] = useState(false);
+
+  // Guest Form State
+  const [guestForm, setGuestForm] = useState({
+    patient_name: '',
+    phone: '',
+    product_name: '',
+    quantity: '' as unknown as number,
+    expected_date: '',
+    hn_number: '',
+    file_number: ''
+  });
+
   useEffect(() => {
-    const saved = localStorage.getItem('supabase_config');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setSbConfig(parsed);
-        if (parsed.url && parsed.key) {
-          setIsConfigured(true);
-          loadData();
-        }
-      } catch (e) {
-        localStorage.removeItem('supabase_config');
-      }
-    } else {
-      setActiveView(View.SETTINGS);
-    }
+    loadData();
     const savedUser = localStorage.getItem('current_user');
-    if (savedUser) setCurrentUser(JSON.parse(savedUser));
+    if (savedUser) {
+      try {
+        const parsed = JSON.parse(savedUser);
+        setCurrentUser(parsed);
+        setActiveView(View.INVENTORY);
+      } catch (e) {
+        localStorage.removeItem('current_user');
+      }
+    }
   }, []);
 
   const loadData = async () => {
-    if (!storageService.isConfigured()) return;
     setIsDataLoading(true);
     try {
-      const [itemsData, productsData, usersData, historyData, outHistoryData] = await Promise.all([
+      const [itemsData, productsData, usersData, historyData, outHistoryData, guestData] = await Promise.all([
         storageService.fetchItems(),
         storageService.fetchProducts(),
         storageService.fetchUsers(),
         storageService.fetchReceiptHistory(),
-        storageService.fetchReleaseHistory()
+        storageService.fetchReleaseHistory(),
+        storageService.fetchGuestRequests()
       ]);
       setItems(itemsData || []);
       setRegisteredProducts(productsData || []);
       setUsers(usersData || []);
       setReceiptHistory(historyData || []);
       setReleaseHistory(outHistoryData || []);
+      setGuestRequests(guestData || []);
     } catch (err: any) {
-      setError("เกิดข้อผิดพลาด: " + (err.message || "Cloud Error"));
+      setError("Cloud Connection Error: " + (err.message || "Unknown error"));
     } finally {
       setIsDataLoading(false);
     }
   };
 
-  const handleRunMigration = async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      // ลองรัน migration
-      await storageService.migrateDatabase();
-      showSuccess("อัปเดตฐานข้อมูลสำเร็จ! (search_name added)");
-      loadData();
-    } catch (err: any) {
-      // ถ้าพัง ให้แจ้ง SQL เพื่อรันเอง
-      setError(err.message || "กรุณารัน SQL: ALTER TABLE products ADD COLUMN search_name TEXT; ใน Supabase SQL Editor");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleTestConnection = async () => {
-    if (!sbConfig.url || !sbConfig.key) {
-      setError("กรุณากรอกข้อมูลให้ครบถ้วน");
-      return;
-    }
-    setIsTestingConnection(true);
-    setError(null);
-    try {
-      await storageService.testConnection(sbConfig.url, sbConfig.key);
-      showSuccess("✅ เชื่อมต่อ Cloud สำเร็จ!");
-    } catch (err: any) {
-      setError("❌ เชื่อมต่อล้มเหลว: " + err.message);
-    } finally {
-      setIsTestingConnection(false);
-    }
-  };
-
-  const handleSaveConfig = () => {
-    if (!sbConfig.url || !sbConfig.key) {
-      setError("กรุณากรอกข้อมูลให้ครบถ้วน");
-      return;
-    }
-    storageService.configure(sbConfig.url, sbConfig.key);
-    setIsConfigured(true);
-    showSuccess("บันทึก Cloud Config สำเร็จ");
-    setActiveView(View.INVENTORY);
-    loadData();
-  };
-
-  const handleUserReg = async () => {
-    if (!newUser.firstName || !newUser.username || !newUser.password) {
-      setError("กรุณากรอกข้อมูลให้ครบ");
-      return;
-    }
-    setIsLoading(true);
-    try {
-      await storageService.registerUser(newUser);
-      setNewUser({ firstName: '', lastName: '', username: '', password: '' });
-      showSuccess("ลงทะเบียนผู้ใช้สำเร็จ");
-      loadData();
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setIsLoading(false);
-    }
+  const handleLogout = () => {
+    setCurrentUser(null);
+    localStorage.removeItem('current_user');
+    setActiveView(View.GUEST_REQUEST);
+    showSuccess("ออกจากระบบแล้ว");
   };
 
   const handleVerifyPassword = () => {
@@ -161,20 +105,73 @@ const App: React.FC = () => {
       showSuccess(`ยินดีต้อนรับ คุณ ${loginAttemptUser.firstName}`);
       setLoginAttemptUser(null);
       setLoginPassword('');
+      setActiveView(View.INVENTORY);
     } else {
       setError("รหัสผ่านไม่ถูกต้อง");
     }
   };
 
-  const selectUser = (user: User) => {
-    setLoginAttemptUser(user);
-    setLoginPassword('');
-    setError(null);
-  };
-
   const showSuccess = (msg: string) => {
     setSuccessMessage(msg);
-    setTimeout(() => setSuccessMessage(null), 2000);
+    setTimeout(() => setSuccessMessage(null), 3000);
+  };
+
+  const validatePhone = (phone: string) => {
+    const cleanPhone = phone.replace(/\D/g, '');
+    return cleanPhone.length === 10;
+  };
+
+  const submitGuestRequest = async (type: 'Request' | 'Return') => {
+    if (!guestForm.patient_name || !guestForm.phone || !guestForm.product_name || !guestForm.expected_date || !guestForm.quantity) {
+      setError("กรุณากรอกข้อมูลให้ครบถ้วน รวมถึงจำนวนที่ต้องการ");
+      return;
+    }
+    
+    if (!validatePhone(guestForm.phone)) {
+      setError("⚠️ เบอร์โทรศัพท์ต้องมี 10 หลักเท่านั้น");
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await storageService.saveGuestRequest({
+        type,
+        patient_name: guestForm.patient_name,
+        phone: guestForm.phone.replace(/\D/g, ''),
+        product_name: guestForm.product_name,
+        quantity: Number(guestForm.quantity),
+        expected_date: guestForm.expected_date,
+        hn_number: guestForm.hn_number,
+        file_number: guestForm.file_number
+      });
+      showSuccess(type === 'Request' ? "ส่งรายการขอน้ำยาเรียบร้อยแล้ว" : "ส่งรายการคืนน้ำยาเรียบร้อยแล้ว");
+      setGuestForm({ patient_name: '', phone: '', product_name: '', quantity: '' as unknown as number, expected_date: '', hn_number: '', file_number: '' });
+      loadData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCallAndCopy = (phone: string) => {
+    const cleanPhone = phone.replace(/\D/g, '');
+    navigator.clipboard.writeText(cleanPhone).then(() => {
+      showSuccess(`คัดลอกเบอร์ ${cleanPhone} แล้ว กำลังโทรออก...`);
+      window.location.href = `tel:${cleanPhone}`;
+    }).catch(() => {
+      window.location.href = `tel:${cleanPhone}`;
+    });
+  };
+
+  const updateQueueStatus = async (id: string, status: GuestRequest['status']) => {
+    try {
+      await storageService.updateGuestRequestStatus(id, status);
+      showSuccess("อัปเดตสถานะคิวแล้ว");
+      loadData();
+    } catch (err: any) {
+      setError(err.message);
+    }
   };
 
   const findMatches = (scannedThai: string, scannedEng: string) => {
@@ -186,48 +183,174 @@ const App: React.FC = () => {
       const pThai = normalize(p.thai_name);
       const pEng = normalize(p.english_name);
       const pSearch = normalize(p.search_name);
-      
       const prefixLength = 10;
-      const thaiPrefixMatch = normSThai.length >= prefixLength && pThai.length >= prefixLength && 
-                             normSThai.substring(0, prefixLength) === pThai.substring(0, prefixLength);
-      
-      const engPrefixMatch = normSEng.length >= prefixLength && pEng.length >= prefixLength && 
-                            normSEng.substring(0, prefixLength) === pEng.substring(0, prefixLength);
-
+      const thaiPrefixMatch = normSThai.length >= prefixLength && pThai.length >= prefixLength && normSThai.substring(0, prefixLength) === pThai.substring(0, prefixLength);
+      const engPrefixMatch = normSEng.length >= prefixLength && pEng.length >= prefixLength && normSEng.substring(0, prefixLength) === pEng.substring(0, prefixLength);
       const thaiContains = (normSThai && pThai.includes(normSThai)) || (normSThai && pThai.length > 0 && normSThai.includes(pThai));
       const engContains = (normSEng && pEng.includes(normSEng)) || (normSEng && pEng.length > 0 && normSEng.includes(pEng));
       const searchContains = (normSThai && pSearch.includes(normSThai)) || (normSEng && pSearch.includes(normSEng));
-
       return thaiPrefixMatch || engPrefixMatch || thaiContains || engContains || searchContains;
     });
+  };
+
+  const handleManualSelect = (product: Product) => {
+    const mockScanData: LabelExtractionResult = {
+      thaiName: product.thai_name,
+      englishName: product.english_name,
+      batchNo: '',
+      mfd: '',
+      exp: '',
+      manufacturer: product.manufacturer,
+      searchName: product.search_name
+    };
+    
+    if (activeView === View.STOCK_IN) {
+      selectItemForStockIn(product, mockScanData);
+    } else if (activeView === View.STOCK_OUT) {
+      selectItemForStockOut(product, mockScanData);
+    }
+    setIsManualMode(false);
+  };
+
+  const filteredManualProducts = useMemo(() => {
+    const query = manualSearchQuery.toLowerCase().trim();
+    if (!query) return registeredProducts;
+    return registeredProducts.filter(p => 
+      p.thai_name?.toLowerCase().includes(query) || 
+      p.english_name?.toLowerCase().includes(query) || 
+      p.search_name?.toLowerCase().includes(query)
+    );
+  }, [manualSearchQuery, registeredProducts]);
+
+  const handleStockIn = async (image: string) => {
+    if (!currentUser) { setActiveView(View.USERS); return; }
+    setIsLoading(true);
+    setError(null);
+    setPotentialMatches([]);
+    setMatchedProduct(null);
+    try {
+      const data = await extractLabelInfo(image);
+      // Fix: Change data.english_name to data.englishName to match the LabelExtractionResult interface
+      const matches = findMatches(data.thaiName, data.englishName);
+      if (matches.length === 0) { 
+        setError(`⚠️ ไม่พบสินค้าในทะเบียน กรุณาลองใช้ปุ่ม "เลือกรายการเอง"`); 
+        return; 
+      }
+      setScanResult(data);
+      setPotentialMatches(matches);
+      if (matches.length === 1) selectItemForStockIn(matches[0], data);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const selectItemForStockIn = (product: Product, data: LabelExtractionResult) => {
+    setMatchedProduct(product);
+    setScanResult({ ...data, thaiName: product.thai_name, englishName: product.english_name });
+    setInputQty(1);
+    setManualSearchQuery('');
+  };
+
+  const executeStockIn = async () => {
+    if (!currentUser || !scanResult) return;
+    if (!scanResult.batchNo || !scanResult.exp) {
+      setError("กรุณากรอก Batch No. และ วันหมดอายุ");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      await storageService.saveItem({
+        thai_name: scanResult.thaiName,
+        english_name: scanResult.englishName,
+        batch_no: scanResult.batchNo,
+        mfd: scanResult.mfd,
+        exp: scanResult.exp,
+        manufacturer: scanResult.manufacturer,
+        quantity: inputQty
+      }, currentUser.username);
+      setScanResult(null);
+      setMatchedProduct(null);
+      showSuccess(`รับเข้าสำเร็จ`);
+      setActiveView(View.INVENTORY);
+      loadData();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleStockOutScan = async (image: string) => {
+    if (!currentUser) { setActiveView(View.USERS); return; }
+    setIsLoading(true);
+    setError(null);
+    setPotentialMatches([]);
+    setMatchedProduct(null);
+    try {
+      const data = await extractLabelInfo(image);
+      // Fix: Change data.english_name to data.englishName to match the LabelExtractionResult interface
+      const matches = findMatches(data.thaiName, data.englishName);
+      if (matches.length === 0) {
+        setError(`⚠️ ไม่พบสินค้าในคลัง กรุณาลองใช้ปุ่ม "เลือกรายการเอง"`);
+        return;
+      }
+      setScanResult(data);
+      setPotentialMatches(matches);
+      if (matches.length === 1) selectItemForStockOut(matches[0], data);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const selectItemForStockOut = (product: Product, data: LabelExtractionResult) => {
+    setMatchedProduct(product);
+    setScanResult({ ...data, thaiName: product.thai_name, englishName: product.english_name });
+    setInputQty(1);
+    setPatientName('');
+    setManualSearchQuery('');
+  };
+
+  const executeStockOut = async () => {
+    if (!currentUser || !scanResult || !patientName.trim()) {
+      if (!patientName.trim()) setError("กรุณาระบุชื่อผู้ป่วย");
+      return;
+    }
+    if (!scanResult.batchNo) {
+      setError("กรุณาระบุ Batch No. ที่ต้องการจ่ายออก");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const releasedItem = await storageService.releaseItemByBatch(scanResult.batchNo, inputQty, currentUser.username, patientName);
+      if (releasedItem) {
+        showSuccess(`จ่ายออกสำเร็จ`);
+        setScanResult(null);
+        setMatchedProduct(null);
+        setPatientName('');
+        setActiveView(View.INVENTORY);
+        loadData();
+      } else {
+        setError(`❌ ไม่พบข้อมูล Batch หรือจำนวนไม่พอ`);
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleRegisterScan = async (image: string) => {
     if (!currentUser) { setActiveView(View.USERS); return; }
     setIsLoading(true);
     setError(null);
-    setDuplicateProductWarning(null);
     setEditingProductId(null);
     try {
       const data = await extractLabelInfo(image);
       const finalThaiName = (data.thaiName || "").trim() === "" ? (data.englishName || "").trim() : data.thaiName;
-      
-      const normalize = (s: string) => (s || "").replace(/[\s\-\_\.]/g, '').toLowerCase();
-      const normalizedScanned = normalize(finalThaiName);
-      const existingProduct = registeredProducts.find(p => {
-        const pThai = normalize(p.thai_name);
-        const pEng = normalize(p.english_name);
-        return pThai === normalizedScanned || pEng === normalizedScanned || 
-               (data.englishName && pEng === normalize(data.englishName));
-      });
-
-      if (existingProduct) {
-        setDuplicateProductWarning({
-          name: existingProduct.thai_name || existingProduct.english_name,
-          manufacturer: existingProduct.manufacturer || 'ไม่ระบุ'
-        });
-      }
-
       setScanResult({ ...data, thaiName: finalThaiName, image: image, searchName: '' });
       setTempContact('');
       setTempMinStock(0);
@@ -248,9 +371,11 @@ const App: React.FC = () => {
       mfd: '',
       exp: '',
       manufacturer: '',
+      image: undefined
     });
     setTempContact('');
     setTempMinStock(0);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const selectProductForEdit = (product: Product) => {
@@ -272,18 +397,27 @@ const App: React.FC = () => {
 
   const executeRegistration = async () => {
     if (!currentUser || !scanResult) return;
+    if (!scanResult.thaiName) {
+      setError("กรุณากรอกชื่อสินค้า");
+      return;
+    }
+    
+    if (tempContact && !validatePhone(tempContact)) {
+      setError("⚠️ เบอร์โทรศัพท์ต้องมี 10 หลักเท่านั้น");
+      return;
+    }
+
     setIsLoading(true);
     try {
       const productPayload = {
         thai_name: scanResult.thaiName,
-        english_name: scanResult.englishName,
+        english_name: scanResult.english_name,
         search_name: scanResult.searchName || '',
         manufacturer: scanResult.manufacturer,
-        contact_number: tempContact,
+        contact_number: tempContact.replace(/\D/g, ''),
         min_stock: tempMinStock,
         photo: scanResult.image
       };
-
       if (editingProductId) {
         await storageService.updateProduct(editingProductId, productPayload);
         showSuccess("อัปเดตข้อมูลสินค้าสำเร็จ");
@@ -291,7 +425,6 @@ const App: React.FC = () => {
         await storageService.registerProduct(productPayload, currentUser.username);
         showSuccess("ลงทะเบียนสินค้าสำเร็จ");
       }
-      
       setScanResult(null);
       setEditingProductId(null);
       loadData();
@@ -302,68 +435,23 @@ const App: React.FC = () => {
     }
   };
 
-  const handleStockIn = async (image: string) => {
-    if (!currentUser) { setActiveView(View.USERS); return; }
+  const handleUserReg = async () => {
+    if (!newUser.firstName || !newUser.username || !newUser.password) {
+      setError("กรุณากรอกข้อมูลให้ครบถ้วน");
+      return;
+    }
     setIsLoading(true);
-    setError(null);
-    setDuplicateBatchInfo(null);
-    setPotentialMatches([]);
-    setMatchedProduct(null);
     try {
-      const data = await extractLabelInfo(image);
-      const matches = findMatches(data.thaiName, data.englishName);
-      if (matches.length === 0) { 
-        setError(`⚠️ ไม่พบสินค้าในทะเบียน กรุณาลงทะเบียน Master Data ก่อน`); 
-        return; 
+      if (editingUser) {
+        await storageService.updateUser(editingUser.id, newUser);
+        showSuccess("อัปเดตผู้ใช้งานสำเร็จ");
+      } else {
+        await storageService.registerUser(newUser);
+        showSuccess("เพิ่มผู้ใช้งานสำเร็จ");
       }
-      setScanResult(data);
-      setPotentialMatches(matches);
-      if (matches.length === 1) selectItemForStockIn(matches[0], data);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const selectItemForStockIn = (product: Product, data: LabelExtractionResult) => {
-    setMatchedProduct(product);
-    setScanResult({ ...data, thaiName: product.thai_name, englishName: product.english_name });
-    setInputQty(1);
-    setIsManualSelecting(false);
-    const duplicate = items.find(i => i.batch_no === data.batchNo && i.status === 'In Stock') || receiptHistory.find(h => h.batch_no === data.batchNo);
-    if (duplicate) {
-      setDuplicateBatchInfo({ 
-        date: new Date('created_at' in duplicate ? duplicate.created_at : duplicate.timestamp).toLocaleString('th-TH'), 
-        qty: duplicate.quantity 
-      });
-    }
-  };
-
-  const startManualStockIn = () => {
-    setIsManualSelecting(true);
-    setManualProductSearch('');
-    setMatchedProduct(null);
-    setScanResult(null);
-  };
-
-  const executeStockIn = async () => {
-    if (!currentUser || !scanResult) return;
-    setIsLoading(true);
-    try {
-      await storageService.saveItem({
-        thai_name: scanResult.thaiName,
-        english_name: scanResult.englishName,
-        batch_no: scanResult.batchNo,
-        mfd: scanResult.mfd,
-        exp: scanResult.exp,
-        manufacturer: scanResult.manufacturer,
-        quantity: inputQty
-      }, currentUser.username);
-      setScanResult(null);
-      setMatchedProduct(null);
-      showSuccess(`รับเข้าสำเร็จโดย ${currentUser.firstName}`);
-      setActiveView(View.INVENTORY);
+      setNewUser({ firstName: '', lastName: '', username: '', password: '', role: 'staff' });
+      setEditingUser(null);
+      setIsAddingUser(false);
       loadData();
     } catch (err: any) {
       setError(err.message);
@@ -372,67 +460,13 @@ const App: React.FC = () => {
     }
   };
 
-  const handleStockOutScan = async (image: string) => {
-    if (!currentUser) { setActiveView(View.USERS); return; }
-    setIsLoading(true);
-    setError(null);
-    setPotentialMatches([]);
-    setMatchedProduct(null);
-    try {
-      const data = await extractLabelInfo(image);
-      const matches = findMatches(data.thaiName, data.englishName);
-      if (matches.length === 0) {
-        setError(`⚠️ ไม่พบสินค้าในคลัง`);
-        return;
-      }
-      setScanResult(data);
-      setPotentialMatches(matches);
-      if (matches.length === 1) selectItemForStockOut(matches[0], data);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const selectItemForStockOut = (product: Product, data: LabelExtractionResult) => {
-    setMatchedProduct(product);
-    setScanResult({ ...data, thaiName: product.thai_name, englishName: product.english_name });
-    setInputQty(1);
-    setPatientName('');
-    setIsManualSelecting(false);
-    const inStockItems = items.filter(i => i.status === 'In Stock' && ((i.thai_name === product.thai_name) || (i.english_name === product.english_name)));
-    if (inStockItems.length > 0) {
-      const earliest = inStockItems.reduce((prev, curr) => (prev.exp < curr.exp) ? prev : curr);
-      if (data.exp > earliest.exp) setEarliestExpInfo({ exp: earliest.exp, batch: earliest.batch_no });
-    }
-  };
-
-  const startManualStockOut = () => {
-    setIsManualSelecting(true);
-    setManualProductSearch('');
-    setMatchedProduct(null);
-    setScanResult(null);
-  };
-
-  const executeStockOut = async () => {
-    if (!currentUser || !scanResult || !patientName.trim()) {
-      if (!patientName.trim()) setError("กรุณาระบุชื่อผู้ป่วย");
-      return;
-    }
+  const handleDeleteUser = async (id: string) => {
+    if (!window.confirm("คุณแน่ใจหรือไม่ว่าต้องการลบผู้ใช้นี้?")) return;
     setIsLoading(true);
     try {
-      const releasedItem = await storageService.releaseItemByBatch(scanResult.batchNo, inputQty, currentUser.username, patientName);
-      if (releasedItem) {
-        showSuccess(`จ่ายออกสำเร็จโดย ${currentUser.firstName}`);
-        setScanResult(null);
-        setMatchedProduct(null);
-        setPatientName('');
-        setActiveView(View.INVENTORY);
-        loadData();
-      } else {
-        setError(`❌ ไม่พบข้อมูล Batch หรือจำนวนไม่พอ`);
-      }
+      await storageService.deleteUser(id);
+      showSuccess("ลบผู้ใช้งานสำเร็จ");
+      loadData();
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -458,163 +492,65 @@ const App: React.FC = () => {
         };
       }
       groups[key].totalCount += (item.quantity || 1);
-      if (item.exp && (!groups[key].nearestExpiry || item.exp < groups[key].nearestExpiry)) groups[key].nearestExpiry = item.exp;
+      if (item.exp && (!groups[key].nearestExpiry || item.exp < groups[key].nearestExpiry)) {
+        groups[key].nearestExpiry = item.exp;
+      }
     });
     return Object.values(groups).sort((a: any, b: any) => (a.name || "").localeCompare(b.name || ""));
   }, [items, registeredProducts]);
 
-  const filteredProducts = useMemo(() => {
-    if (!searchQuery) return registeredProducts;
-    const lowerQuery = searchQuery.toLowerCase();
-    return registeredProducts.filter(p => 
-      (p.thai_name || "").toLowerCase().includes(lowerQuery) || 
-      (p.english_name || "").toLowerCase().includes(lowerQuery) ||
-      (p.search_name || "").toLowerCase().includes(lowerQuery)
-    );
-  }, [registeredProducts, searchQuery]);
+  const sortedGuestRequests = useMemo(() => {
+    return [...guestRequests].sort((a, b) => {
+      // Pending first
+      if (a.status === 'Pending' && b.status !== 'Pending') return -1;
+      if (a.status !== 'Pending' && b.status === 'Pending') return 1;
+      
+      // If same status, sort by expected_date (nearest first)
+      if (a.expected_date < b.expected_date) return -1;
+      if (a.expected_date > b.expected_date) return 1;
+      return 0;
+    });
+  }, [guestRequests]);
 
-  const filteredManualProducts = useMemo(() => {
-    if (!manualProductSearch) return registeredProducts;
-    const lowerQuery = manualProductSearch.toLowerCase();
-    return registeredProducts.filter(p => 
-      (p.thai_name || "").toLowerCase().includes(lowerQuery) || 
-      (p.english_name || "").toLowerCase().includes(lowerQuery) ||
-      (p.search_name || "").toLowerCase().includes(lowerQuery)
-    );
-  }, [registeredProducts, manualProductSearch]);
+  const hasPendingRequests = useMemo(() => {
+    return guestRequests.some(req => req.status === 'Pending');
+  }, [guestRequests]);
 
-  const LoginRequired = () => (
-    <div className="bg-blue-50/50 border-2 border-blue-100 p-10 rounded-[3rem] text-center space-y-6 shadow-sm">
-      <div className="w-24 h-24 bg-blue-100/50 rounded-full flex items-center justify-center mx-auto text-4xl">👥</div>
-      <h3 className="text-2xl font-black text-blue-900 leading-tight">กรุณาเลือกผู้รับผิดชอบรายการ</h3>
-      <button onClick={() => setActiveView(View.USERS)} className="px-10 py-5 bg-blue-900 text-white font-black rounded-[2rem] shadow-xl hover:bg-blue-800 transition-all active:scale-95 flex items-center justify-center gap-3 mx-auto">
-        <span className="text-xl">👤</span> เข้าหน้าเลือกผู้ใช้งาน
-      </button>
-    </div>
-  );
+  // ค้นหารูปภาพสินค้าที่ผู้ป่วยเลือกในหน้า Guest Form
+  const selectedGuestProduct = useMemo(() => {
+    if (!guestForm.product_name) return null;
+    return registeredProducts.find(p => p.thai_name === guestForm.product_name);
+  }, [guestForm.product_name, registeredProducts]);
 
   return (
-    <Layout activeView={activeView} onViewChange={(v) => { 
-      setActiveView(v); 
-      setError(null); 
-      setScanResult(null); 
-      setMatchedProduct(null); 
-      setPotentialMatches([]); 
-      setEarliestExpInfo(null); 
-      setDuplicateBatchInfo(null); 
-      setDuplicateProductWarning(null); 
-      setIsManualSelecting(false);
-      setEditingProductId(null);
-    }} currentUser={currentUser}>
+    <Layout 
+      activeView={activeView} 
+      onViewChange={(v) => { setActiveView(v); setIsManualMode(false); setScanResult(null); }} 
+      currentUser={currentUser} 
+      onLogout={handleLogout}
+      hasPendingRequests={hasPendingRequests}
+    >
       
-      {/* Dropdown Selection for Potential Matches */}
-      {(potentialMatches.length > 1 && !matchedProduct) && (
-        <div className="fixed inset-0 bg-blue-900/90 backdrop-blur-md z-[550] flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-white w-full max-w-md rounded-[2.5rem] overflow-hidden shadow-[0_0_50px_rgba(0,0,0,0.3)] animate-in zoom-in-95">
-            <div className="p-8 bg-blue-900 text-white">
-              <h3 className="font-black text-xl text-white">พบรายการใกล้เคียง ({potentialMatches.length})</h3>
-              <p className="text-[10px] font-bold text-blue-200 uppercase tracking-widest mt-1">กรุณาเลือกรายการสินค้าที่ถูกต้องจากระบบ</p>
-            </div>
-            <div className="p-4 max-h-[60vh] overflow-y-auto space-y-3 bg-slate-50">
-              {potentialMatches.map((p) => (
-                <button 
-                  key={p.id}
-                  onClick={() => activeView === View.STOCK_IN ? selectItemForStockIn(p, scanResult!) : selectItemForStockOut(p, scanResult!)}
-                  className="w-full text-left p-5 bg-white border-2 border-slate-100 rounded-3xl hover:border-blue-500 hover:shadow-lg transition-all flex items-center gap-4 group"
-                >
-                  <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center border group-hover:border-blue-200 overflow-hidden shrink-0 shadow-inner">
-                    {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl text-blue-900">📦</span>}
-                  </div>
-                  <div className="flex-1 overflow-hidden">
-                    <p className="font-black text-blue-900 text-base group-hover:text-blue-700 truncate">{p.thai_name}</p>
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mt-0.5">{(p.manufacturer || 'ไม่ระบุผู้ผลิต')}</p>
-                    {p.search_name && <p className="text-[9px] font-black text-purple-600 uppercase mt-0.5">AKA: {p.search_name}</p>}
-                  </div>
-                </button>
-              ))}
-            </div>
-            <div className="p-6 bg-white border-t border-slate-100 text-center">
-              <button onClick={() => { setScanResult(null); setPotentialMatches([]); }} className="text-sm font-black text-slate-400 hover:text-blue-900 transition-colors">ยกเลิกและถ่ายรูปใหม่</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Manual Product Selection Overlay */}
-      {isManualSelecting && (
-        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[550] flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-white w-full max-w-lg rounded-[2.5rem] overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
-            <div className="p-8 bg-blue-900 text-white">
-              <h3 className="font-black text-xl text-white">ค้นหาสินค้า (Manual Entry)</h3>
-              <p className="text-[10px] font-bold text-blue-100 uppercase tracking-widest mt-1">ค้นด้วยชื่อจริง หรือ "ชื่อค้นหา"</p>
-            </div>
-            <div className="p-6 border-b border-slate-100">
-               <input 
-                 type="text" 
-                 placeholder="🔍 พิมพ์ชื่อสินค้า หรือ ชื่อค้นหา..." 
-                 className="w-full p-4 bg-slate-50 border-2 border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-blue-100 font-black text-blue-900"
-                 value={manualProductSearch}
-                 onChange={e => setManualProductSearch(e.target.value)}
-                 autoFocus
-               />
-            </div>
-            <div className="p-4 overflow-y-auto space-y-3 bg-slate-50 flex-1">
-              {filteredManualProducts.map((p) => (
-                <button 
-                  key={p.id}
-                  onClick={() => {
-                    const emptyResult = {
-                      thaiName: p.thai_name,
-                      englishName: p.english_name,
-                      searchName: p.search_name,
-                      batchNo: '',
-                      mfd: '',
-                      exp: '',
-                      manufacturer: p.manufacturer || '',
-                    };
-                    activeView === View.STOCK_IN ? selectItemForStockIn(p, emptyResult) : selectItemForStockOut(p, emptyResult);
-                  }}
-                  className="w-full text-left p-5 bg-white border-2 border-slate-100 rounded-3xl hover:border-blue-500 hover:shadow-lg transition-all flex items-center gap-4 group"
-                >
-                  <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center border group-hover:border-blue-200 overflow-hidden shrink-0 shadow-inner">
-                    {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl text-blue-900">📦</span>}
-                  </div>
-                  <div className="flex-1 overflow-hidden">
-                    <p className="font-black text-blue-900 text-base group-hover:text-blue-700 truncate">{p.thai_name}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">{(p.manufacturer || 'ไม่ระบุผู้ผลิต')}</p>
-                      {p.search_name && <span className="text-[9px] font-black bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded border border-blue-100">{p.search_name}</span>}
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
-            <div className="p-6 bg-white border-t border-slate-100 text-center">
-              <button onClick={() => setIsManualSelecting(false)} className="text-sm font-black text-slate-400 hover:text-red-500 transition-colors">ยกเลิก</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Login Password Modal */}
       {loginAttemptUser && (
-        <div className="fixed inset-0 bg-blue-900/90 backdrop-blur-md z-[600] flex items-center justify-center p-4 animate-in fade-in">
+        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[600] flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-sm rounded-[3rem] p-8 space-y-6 shadow-2xl">
             <div className="text-center">
-              <div className="w-24 h-24 bg-blue-50 text-blue-900 rounded-full flex items-center justify-center mx-auto text-4xl font-black mb-6 shadow-inner">{loginAttemptUser.firstName[0]}</div>
+              <div className="w-20 h-20 bg-blue-50 text-blue-900 rounded-full flex items-center justify-center mx-auto text-3xl font-black mb-4">{loginAttemptUser.firstName[0]}</div>
               <h3 className="text-2xl font-black text-blue-900">ระบุรหัสผ่าน</h3>
-              <p className="text-sm font-bold text-slate-400 mt-1">คุณ {loginAttemptUser.firstName} กรุณายืนยันตัวตน</p>
+              <p className="text-xs font-bold text-slate-400 mt-1 uppercase">User: {loginAttemptUser.username}</p>
             </div>
             <input 
               type="password" 
+              inputMode="numeric"
+              pattern="[0-9]*"
               autoFocus 
-              placeholder="••••••••" 
               className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-[2rem] outline-none focus:ring-4 focus:ring-blue-100 font-black text-center text-3xl tracking-widest text-blue-900" 
               value={loginPassword} 
-              onChange={e => setLoginPassword(e.target.value)} 
+              onChange={e => setLoginPassword(e.target.value.replace(/\D/g, ''))} 
               onKeyDown={e => e.key === 'Enter' && handleVerifyPassword()} 
             />
-            <div className="flex gap-4 pt-2">
+            <div className="flex gap-4">
               <button onClick={() => setLoginAttemptUser(null)} className="flex-1 py-5 bg-slate-100 text-slate-500 rounded-3xl font-black text-sm">ยกเลิก</button>
               <button onClick={handleVerifyPassword} className="flex-1 py-5 bg-blue-900 text-white rounded-3xl font-black text-sm shadow-xl">ตกลง</button>
             </div>
@@ -622,82 +558,395 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {successMessage && <div className="fixed top-24 left-4 right-4 bg-emerald-600 text-white p-6 rounded-[2rem] shadow-2xl z-[700] text-center font-black animate-in slide-in-from-top-4 duration-500">{successMessage}</div>}
+      {successMessage && <div className="fixed top-24 left-4 right-4 bg-emerald-600 text-white p-6 rounded-[2rem] shadow-2xl z-[700] text-center font-black animate-in slide-in-from-top-4">{successMessage}</div>}
 
-      {/* Main Views */}
       <div className="animate-in fade-in duration-500">
-        {activeView === View.USERS && (
+        
+        {/* หน้าจอ ขอน้ำยา / คืนน้ำยา (Guest) */}
+        {(activeView === View.GUEST_REQUEST || activeView === View.GUEST_RETURN) && (
           <div className="space-y-8 pb-32">
-            <div className="bg-blue-900 p-10 rounded-[3rem] text-white shadow-xl">
-              <h2 className="text-3xl font-black leading-none text-white">ผู้รับผิดชอบรายการ</h2>
-              <p className="text-xs font-bold text-blue-200 uppercase tracking-[0.2em] mt-3">Personnel Management</p>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {users.map(u => (
-                <div key={u.id} onClick={() => selectUser(u)} className={`p-6 rounded-[2.5rem] border-4 cursor-pointer transition-all flex items-center justify-between group ${currentUser?.id === u.id ? 'bg-blue-900 border-blue-900 text-white shadow-2xl scale-[1.02]' : 'bg-white border-slate-50 hover:border-blue-100 hover:shadow-lg'}`}>
-                  <div className="flex items-center gap-5">
-                    <div className={`w-14 h-14 rounded-full flex items-center justify-center font-black text-xl shadow-inner ${currentUser?.id === u.id ? 'bg-white/20' : 'bg-blue-50 text-blue-900'}`}>{u.firstName[0]}</div>
-                    <div>
-                      <p className={`font-black text-lg ${currentUser?.id === u.id ? 'text-white' : 'text-blue-900'}`}>{u.firstName}</p>
-                      <p className={`text-[11px] font-bold ${currentUser?.id === u.id ? 'text-blue-200' : 'text-slate-400'}`}>@{u.username}</p>
-                    </div>
-                  </div>
-                  {currentUser?.id === u.id && <span className="text-2xl text-white">✅</span>}
-                </div>
-              ))}
+            <div className={`${activeView === View.GUEST_REQUEST ? 'bg-blue-900' : 'bg-orange-600'} px-8 py-6 rounded-[2rem] text-white shadow-xl`}>
+              <h2 className="text-2xl font-black leading-none">{activeView === View.GUEST_REQUEST ? 'แบบฟอร์มขอน้ำยา' : 'แบบฟอร์มคืนน้ำยา'}</h2>
+              <p className="text-[10px] font-bold text-white/70 uppercase mt-2 tracking-widest">
+                {activeView === View.GUEST_REQUEST ? 'Patient Request Form' : 'Supply Return Form'}
+              </p>
             </div>
 
-            <div className="bg-white p-10 rounded-[3rem] shadow-sm border border-slate-100 space-y-8">
-              <h3 className="text-lg font-black text-blue-900 uppercase tracking-widest border-b-2 border-blue-50 pb-4">ลงทะเบียนผู้ใช้ใหม่</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">ชื่อเรียก</label>
-                  <input placeholder="เช่น หมอใจดี" className="w-full p-5 bg-slate-50 rounded-2xl outline-none font-black text-blue-900 placeholder:text-slate-300" value={newUser.firstName} onChange={e => setNewUser({...newUser, firstName: e.target.value})} />
+            <div className="bg-white p-8 rounded-[3rem] shadow-sm border border-slate-100 space-y-6">
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2">ชื่อ-นามสกุล ผู้ป่วย</label>
+                  <input className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-blue-900" placeholder="ระบุชื่อจริง-นามสกุล" value={guestForm.patient_name} onChange={e => setGuestForm({...guestForm, patient_name: e.target.value})} />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">USERNAME</label>
-                  <input placeholder="user123" className="w-full p-5 bg-slate-50 rounded-2xl outline-none font-black text-blue-900" value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} />
+                
+                {/* ข้อมูล HN และ เลขที่แฟ้ม (Grid 2 columns) */}
+                <div className="grid grid-cols-2 gap-4">
+                   <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase ml-2">เลขที่ HN (ไม่บังคับ)</label>
+                    <input className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-blue-900" placeholder="เช่น 12345/67" value={guestForm.hn_number} onChange={e => setGuestForm({...guestForm, hn_number: e.target.value})} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase ml-2">เลขที่แฟ้ม (ไม่บังคับ)</label>
+                    <input className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-blue-900" placeholder="ระบุเลขที่แฟ้ม" value={guestForm.file_number} onChange={e => setGuestForm({...guestForm, file_number: e.target.value})} />
+                  </div>
                 </div>
-                <div className="md:col-span-2 space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">รหัสผ่านลับ</label>
-                  <input type="password" placeholder="••••••••" className="w-full p-5 bg-slate-50 rounded-2xl outline-none font-black text-blue-900" value={newUser.password} onChange={e => setNewUser({...newUser, password: e.target.value})} />
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2">เบอร์โทรศัพท์ติดต่อ (10 หลัก)</label>
+                  <input type="tel" maxLength={10} className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-blue-900" placeholder="08XXXXXXXX" value={guestForm.phone} onChange={e => setGuestForm({...guestForm, phone: e.target.value.replace(/\D/g, '')})} />
+                </div>
+                
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase ml-2">เลือกรายการสินค้า</label>
+                    <select className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold appearance-none text-blue-900 border border-transparent focus:border-blue-500" value={guestForm.product_name} onChange={e => setGuestForm({...guestForm, product_name: e.target.value})}>
+                      <option value="" className="text-slate-400">-- เลือกรายการ --</option>
+                      {registeredProducts.map(p => (
+                        <option key={p.id} value={p.thai_name}>{p.thai_name} {p.search_name ? `(${p.search_name})` : ''}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* แสดงรูปภาพสินค้าที่เลือก */}
+                  {selectedGuestProduct && (
+                    <div className="animate-in zoom-in-95 duration-300">
+                      <div className="bg-slate-50 rounded-[2rem] p-4 border border-slate-100 flex flex-col items-center gap-3">
+                        <div className="w-full aspect-video bg-white rounded-xl overflow-hidden shadow-inner flex items-center justify-center">
+                          {selectedGuestProduct.photo ? (
+                            <img src={selectedGuestProduct.photo} alt={selectedGuestProduct.thai_name} className="w-full h-full object-contain" />
+                          ) : (
+                            <div className="text-4xl">📦</div>
+                          )}
+                        </div>
+                        <div className="text-center">
+                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">ตรวจสอบรายการก่อนกดส่ง</p>
+                          <p className="font-black text-blue-900 text-sm mt-1">{selectedGuestProduct.thai_name}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase ml-2">จำนวน</label>
+                    <input type="number" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-blue-900" placeholder="ระบุจำนวน" value={guestForm.quantity} min="1" onChange={e => setGuestForm({...guestForm, quantity: e.target.value === '' ? '' as unknown as number : parseInt(e.target.value)})} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 uppercase ml-2">{activeView === View.GUEST_REQUEST ? 'วันที่มารับ' : 'วันที่มาส่ง'}</label>
+                    <input type="date" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-blue-900" value={guestForm.expected_date} onChange={e => setGuestForm({...guestForm, expected_date: e.target.value})} />
+                  </div>
                 </div>
               </div>
-              <button onClick={handleUserReg} disabled={isLoading} className="w-full py-6 bg-blue-900 text-white font-black rounded-3xl shadow-2xl shadow-blue-900/20 active:scale-[0.98] transition-all">{isLoading ? 'กำลังประมวลผล...' : 'ลงทะเบียนผู้ใช้งาน'}</button>
+              <button disabled={isLoading} onClick={() => submitGuestRequest(activeView === View.GUEST_REQUEST ? 'Request' : 'Return')} className={`w-full py-6 text-white font-black rounded-[2rem] shadow-xl transition-all active:scale-95 ${activeView === View.GUEST_REQUEST ? 'bg-blue-900' : 'bg-orange-600'} ${isLoading ? 'opacity-50' : ''}`}>
+                {isLoading ? 'กำลังส่งข้อมูล...' : 'ส่งข้อมูลรายการ'}
+              </button>
             </div>
           </div>
         )}
 
-        {activeView === View.INVENTORY && (
+        {/* หน้าจอ รับสินค้าเข้า */}
+        {activeView === View.STOCK_IN && currentUser && (
+           <div className="space-y-8">
+             <div className="bg-blue-900 px-8 py-6 rounded-[2rem] text-white shadow-xl">
+               <h2 className="text-2xl font-black leading-none">รับสินค้าเข้า</h2>
+               <p className="text-[10px] font-bold text-blue-200 uppercase mt-2 tracking-widest">Inventory Inflow</p>
+             </div>
+             
+             {!scanResult && !isManualMode && (
+               <div className="space-y-4">
+                 <Scanner label="สแกนฉลากเพื่อรับเข้า" onScan={handleStockIn} isLoading={isLoading} />
+                 <button onClick={() => setIsManualMode(true)} className="w-full py-4 bg-white border-2 border-blue-100 text-blue-900 font-black rounded-2xl shadow-sm hover:bg-blue-50 transition-all flex items-center justify-center gap-2">
+                   <span>📂</span> ไม่มีรูป/กล้องเสีย: เลือกรายการเอง
+                 </button>
+               </div>
+             )}
+
+             {isManualMode && (
+               <div className="bg-white p-6 rounded-[3rem] shadow-sm border border-slate-100 space-y-4">
+                 <div className="flex justify-between items-center">
+                   <h3 className="font-black text-blue-900">เลือกสินค้าจากคลังข้อมูล</h3>
+                   <button onClick={() => setIsManualMode(false)} className="text-xs font-bold text-slate-400">ยกเลิก</button>
+                 </div>
+                 <input placeholder="พิมพ์ชื่อสินค้า หรือ ชื่อค้นหา..." className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-blue-900 border border-slate-100" value={manualSearchQuery} onChange={e => setManualSearchQuery(e.target.value)} />
+                 <div className="max-h-60 overflow-y-auto space-y-2">
+                   {filteredManualProducts.map(p => (
+                     <div key={p.id} onClick={() => handleManualSelect(p)} className="p-4 bg-slate-50 rounded-2xl hover:bg-blue-50 cursor-pointer">
+                       <p className="font-black text-slate-800 text-sm">{p.thai_name}</p>
+                       <p className="text-[10px] text-slate-400 font-bold uppercase">{p.search_name || p.english_name}</p>
+                     </div>
+                   ))}
+                 </div>
+               </div>
+             )}
+
+             {scanResult && matchedProduct && (
+                <div className="bg-white p-8 rounded-[3rem] shadow-2xl space-y-6">
+                  <div className="flex justify-between items-center border-b pb-4">
+                    <div className="font-black text-xl text-blue-900">{matchedProduct.thai_name}</div>
+                    <button onClick={() => {setScanResult(null); setMatchedProduct(null);}} className="text-slate-300">✕</button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase">Batch No.</label>
+                      <input className="w-full p-4 bg-slate-50 rounded-xl outline-none font-black text-blue-900" value={scanResult.batchNo} onChange={e => setScanResult({...scanResult, batchNo: e.target.value})} />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase">EXP</label>
+                      <input type="date" className="w-full p-4 bg-slate-50 rounded-xl outline-none font-black text-blue-900" value={scanResult.exp} onChange={e => setScanResult({...scanResult, exp: e.target.value})} />
+                    </div>
+                  </div>
+                  <div className="bg-blue-50 p-6 rounded-[2rem] text-center">
+                    <p className="text-[10px] font-black text-blue-400 mb-2">จำนวนที่รับเข้า</p>
+                    <div className="flex items-center justify-center gap-6">
+                      <button onClick={() => setInputQty(Math.max(1, inputQty - 1))} className="w-12 h-12 bg-white rounded-full font-black text-blue-900">-</button>
+                      <input type="number" className="bg-transparent text-center font-black text-4xl w-24 outline-none text-blue-900" value={inputQty} onChange={e => setInputQty(parseInt(e.target.value) || 1)} />
+                      <button onClick={() => setInputQty(inputQty + 1)} className="w-12 h-12 bg-white rounded-full font-black text-blue-900">+</button>
+                    </div>
+                  </div>
+                  <button onClick={executeStockIn} className="w-full py-6 bg-blue-900 text-white font-black rounded-[2rem] shadow-xl">ยืนยันรับเข้า</button>
+                </div>
+             )}
+           </div>
+        )}
+
+        {/* หน้าจอ จ่ายสินค้าออก */}
+        {activeView === View.STOCK_OUT && currentUser && (
+          <div className="space-y-8">
+             <div className="bg-red-900 px-8 py-6 rounded-[2rem] text-white shadow-xl">
+               <h2 className="text-2xl font-black leading-none">จ่ายสินค้าออก</h2>
+               <p className="text-[10px] font-bold text-red-200 uppercase mt-2 tracking-widest">Inventory Outflow</p>
+             </div>
+
+             {!scanResult && !isManualMode && (
+               <div className="space-y-4">
+                 <Scanner label="สแกนฉลากเพื่อจ่ายออก" onScan={handleStockOutScan} isLoading={isLoading} />
+                 <button onClick={() => setIsManualMode(true)} className="w-full py-4 bg-white border-2 border-red-50 text-red-900 font-black rounded-2xl shadow-sm hover:bg-red-50 transition-all flex items-center justify-center gap-2">
+                   <span>📂</span> ไม่มีรูป/กล้องเสีย: เลือกรายการเอง
+                 </button>
+               </div>
+             )}
+
+             {isManualMode && (
+               <div className="bg-white p-6 rounded-[3rem] shadow-sm border border-slate-100 space-y-4">
+                 <div className="flex justify-between items-center">
+                   <h3 className="font-black text-red-900">เลือกสินค้าที่จะจ่าย</h3>
+                   <button onClick={() => setIsManualMode(false)} className="text-xs font-bold text-slate-400">ยกเลิก</button>
+                 </div>
+                 <input placeholder="พิมพ์ชื่อสินค้า หรือ ชื่อค้นหา..." className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-blue-900 border border-slate-100" value={manualSearchQuery} onChange={e => setManualSearchQuery(e.target.value)} />
+                 <div className="max-h-60 overflow-y-auto space-y-2">
+                   {filteredManualProducts.map(p => (
+                     <div key={p.id} onClick={() => handleManualSelect(p)} className="p-4 bg-slate-50 rounded-2xl hover:bg-red-50 cursor-pointer">
+                       <p className="font-black text-slate-800 text-sm">{p.thai_name}</p>
+                       <p className="text-[10px] text-slate-400 font-bold uppercase">{p.search_name || p.english_name}</p>
+                     </div>
+                   ))}
+                 </div>
+               </div>
+             )}
+
+             {scanResult && matchedProduct && (
+                <div className="bg-white p-8 rounded-[3rem] shadow-2xl space-y-6">
+                  <div className="flex justify-between items-center border-b pb-4">
+                    <div className="font-black text-xl text-blue-900">{matchedProduct.thai_name}</div>
+                    <button onClick={() => {setScanResult(null); setMatchedProduct(null);}} className="text-slate-300">✕</button>
+                  </div>
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase">Batch ที่ต้องการจ่าย</label>
+                      <input className="w-full p-4 bg-slate-50 rounded-xl outline-none font-black text-blue-900" placeholder="ระบุ Batch No." value={scanResult.batchNo} onChange={e => setScanResult({...scanResult, batchNo: e.target.value})} />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase">ชื่อผู้ป่วย / หน่วยงาน</label>
+                      <input className="w-full p-4 bg-slate-50 rounded-xl outline-none font-black text-blue-900" value={patientName} onChange={setPatientName(e.target.value)} />
+                    </div>
+                    <div className="bg-red-50 p-6 rounded-[2rem] text-center">
+                      <p className="text-[10px] font-black text-red-400 mb-2">จำนวนที่จ่าย</p>
+                      <div className="flex items-center justify-center gap-6">
+                        <button onClick={() => setInputQty(Math.max(1, inputQty - 1))} className="w-12 h-12 bg-white rounded-full font-black text-blue-900">-</button>
+                        <input type="number" className="bg-transparent text-center font-black text-4xl w-24 outline-none text-blue-900" value={inputQty} onChange={e => setInputQty(parseInt(e.target.value) || 1)} />
+                        <button onClick={() => setInputQty(inputQty + 1)} className="w-12 h-12 bg-white rounded-full font-black text-blue-900">+</button>
+                      </div>
+                    </div>
+                  </div>
+                  <button onClick={executeStockOut} className="w-full py-6 bg-red-600 text-white font-black rounded-[2rem] shadow-xl">บันทึกการจ่ายออก</button>
+                </div>
+             )}
+          </div>
+        )}
+
+        {/* หน้าจอ ลงทะเบียนสินค้า (Master Data) */}
+        {activeView === View.REGISTRATION && currentUser && (
+           <div className="space-y-8 pb-32">
+             <div className="bg-purple-900 p-10 rounded-[3rem] text-white shadow-xl">
+               <h2 className="text-3xl font-black leading-none">ลงทะเบียนสินค้า</h2>
+               <p className="text-xs font-bold text-purple-200 uppercase mt-3 tracking-widest">Master Data Registration</p>
+             </div>
+             
+             {!scanResult && (
+               <div className="space-y-4">
+                 <Scanner label="สแกนเพื่อเริ่มลงทะเบียน" onScan={handleRegisterScan} isLoading={isLoading} />
+                 <button onClick={startManualRegistration} className="w-full py-4 bg-white border-2 border-purple-100 text-purple-900 font-black rounded-2xl shadow-sm hover:bg-purple-50 transition-all flex items-center justify-center gap-2">
+                   <span>➕</span> ไม่มีรูป/กล้องเสีย: กรอกข้อมูลเอง
+                 </button>
+               </div>
+             )}
+
+             {scanResult && (
+               <div className="bg-white p-8 rounded-[3rem] shadow-2xl space-y-6">
+                  <div className="flex justify-between items-center">
+                    <h3 className="font-black text-purple-900 uppercase tracking-widest">{editingProductId ? 'แก้ไขข้อมูล' : 'กรอกข้อมูลสินค้า'}</h3>
+                    <button onClick={() => setScanResult(null)} className="text-xs font-bold text-slate-400">ยกเลิก</button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-2">ชื่อไทย</label>
+                      <input className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-black text-blue-900" value={scanResult.thaiName} onChange={e => setScanResult({...scanResult, thaiName: e.target.value})} />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-2">ชื่อค้นหา (Search Name)</label>
+                      <input className="w-full p-4 bg-blue-50/50 rounded-2xl outline-none font-black text-blue-900" placeholder="เช่น รหัสย่อ หรือ ชื่อเรียกสั้นๆ" value={scanResult.searchName} onChange={e => setScanResult({...scanResult, searchName: e.target.value})} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-2">ผู้ผลิต</label>
+                      <input className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-black text-blue-900" value={scanResult.manufacturer} onChange={e => setScanResult({...scanResult, manufacturer: e.target.value})} />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-black text-slate-400 uppercase ml-2">Min Stock Alert</label>
+                      <input type="number" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-black text-blue-900" value={tempMinStock} onChange={e => setTempMinStock(parseInt(e.target.value) || 0)} />
+                    </div>
+                  </div>
+                  <button onClick={executeRegistration} className="w-full py-6 bg-purple-600 text-white font-black rounded-[2rem] shadow-xl">💾 บันทึกข้อมูลสินค้า</button>
+               </div>
+             )}
+             
+             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-8">
+               {registeredProducts.map(p => (
+                 <div key={p.id} onClick={() => selectProductForEdit(p)} className="p-4 bg-white rounded-3xl border border-slate-100 shadow-sm flex items-center gap-4 cursor-pointer hover:border-purple-300 transition-all">
+                   <div className="w-12 h-12 bg-purple-50 rounded-xl flex items-center justify-center text-xl shrink-0 text-purple-600 font-bold">📦</div>
+                   <div className="truncate">
+                     <p className="font-black text-slate-800 text-sm truncate">{p.thai_name}</p>
+                     <p className="text-[9px] font-bold text-slate-400 uppercase">{p.search_name || 'NO SEARCH TAG'}</p>
+                   </div>
+                 </div>
+               ))}
+             </div>
+           </div>
+        )}
+
+        {/* หน้าจอ รายการรอคิว (Staff/Admin) */}
+        {activeView === View.QUEUE_LIST && currentUser && (
+          <div className="space-y-8 pb-32">
+            <div className="bg-indigo-900 p-10 rounded-[3rem] text-white shadow-xl flex justify-between items-center">
+              <div>
+                <h2 className="text-3xl font-black leading-none">รายการรอคิว</h2>
+                <p className="text-xs font-bold text-indigo-200 uppercase mt-3 tracking-widest">Guest Request Queue</p>
+              </div>
+              <button onClick={loadData} className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center text-white">🔄</button>
+            </div>
+            <div className="grid grid-cols-1 gap-4">
+              {sortedGuestRequests.length === 0 && <div className="text-center py-20 text-slate-400 font-bold">ไม่มีรายการรอคิว</div>}
+              {sortedGuestRequests.map(req => (
+                <div key={req.id} className={`bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col md:flex-row gap-6 items-start md:items-center justify-between transition-all ${req.status !== 'Pending' ? 'opacity-60 grayscale' : 'border-indigo-100'}`}>
+                  <div className="flex items-center gap-4 w-full md:w-auto">
+                    <div className={`w-14 h-14 rounded-3xl flex items-center justify-center font-black text-xl shadow-inner shrink-0 ${req.type === 'Request' ? 'bg-blue-50 text-blue-600' : 'bg-orange-50 text-orange-600'}`}>
+                      {req.type === 'Request' ? 'ขอ' : 'คืน'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-3">
+                        <h4 className="font-black text-slate-800 text-lg leading-none truncate">{req.patient_name}</h4>
+                      </div>
+                      
+                      {/* ข้อมูล HN และ เลขที่แฟ้ม (Enhanced Badges) */}
+                      {(req.hn_number || req.file_number) && (
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          {req.hn_number && (
+                            <span className="flex items-center gap-1 text-[10px] font-black bg-blue-50 text-blue-700 px-2 py-1 rounded-lg border border-blue-100 shadow-sm">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                              HN: {req.hn_number}
+                            </span>
+                          )}
+                          {req.file_number && (
+                            <span className="flex items-center gap-1 text-[10px] font-black bg-indigo-50 text-indigo-700 px-2 py-1 rounded-lg border border-indigo-100 shadow-sm">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M4 22V4a2 2 0 0 1 2-2h8.5L20 7.5V22a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><polyline points="14 2 14 8 20 8"/></svg>
+                              แฟ้ม: {req.file_number}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="flex items-center flex-wrap gap-2 mt-2">
+                        <p className="text-xs font-bold text-slate-500 truncate max-w-[200px]">{req.product_name}</p>
+                        <span className="text-sm font-black text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-100">
+                          x {req.quantity}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 mt-2">
+                        <span className="text-[9px] font-black uppercase px-2 py-1 bg-slate-100 rounded-lg text-slate-500">
+                          {req.type === 'Request' ? 'นัดรับ:' : 'นัดคืน:'} {new Date(req.expected_date).toLocaleDateString('th-TH')}
+                        </span>
+                        {req.status !== 'Pending' && (
+                          <span className={`text-[9px] font-black uppercase px-2 py-1 rounded-lg ${req.status === 'Completed' ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-red-50 text-red-600 border border-red-100'}`}>
+                            {req.status === 'Completed' ? 'ดำเนินการแล้ว' : 'ยกเลิกแล้ว'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-2 text-right w-full md:w-auto mt-4 md:mt-0">
+                    <button onClick={() => handleCallAndCopy(req.phone)} className="flex items-center justify-center md:justify-end gap-2 text-blue-600 bg-blue-50 px-5 py-2.5 rounded-2xl border border-blue-100 hover:bg-blue-100 transition-colors shadow-sm">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                      <span className="font-black text-sm">{req.phone}</span>
+                    </button>
+                    {req.status === 'Pending' && (
+                      <div className="flex gap-2">
+                        <button onClick={() => updateQueueStatus(req.id, 'Cancelled')} className="px-5 py-3 bg-slate-100 text-slate-500 rounded-2xl text-[10px] font-black flex-1 md:flex-initial hover:bg-slate-200 transition-colors">ยกเลิก</button>
+                        <button onClick={() => updateQueueStatus(req.id, 'Completed')} className="px-5 py-3 bg-emerald-600 text-white rounded-2xl text-[10px] font-black flex-1 md:flex-initial shadow-lg shadow-emerald-900/20 active:scale-95 transition-all">เรียบร้อย</button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* หน้าจอสต๊อกคงเหลือ */}
+        {activeView === View.INVENTORY && currentUser && (
           <div className="space-y-8">
             <div className="flex justify-between items-end px-2">
               <div>
-                <h2 className="text-3xl font-black text-blue-900">สต๊อก Cloud</h2>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mt-1">Real-time Central Stock</p>
+                <h2 className="text-3xl font-black text-slate-800">สต๊อกคงเหลือ</h2>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Cloud Sync Active</p>
               </div>
-              <button onClick={loadData} className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center shadow-sm border border-slate-100 hover:rotate-180 transition-all duration-700">🔄</button>
+              <button onClick={loadData} className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm border border-slate-100">🔄</button>
             </div>
-            
             <div className="bg-white rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left">
-                  <thead className="bg-slate-50/50">
-                    <tr>
-                      <th className="px-8 py-6 text-[11px] font-black text-blue-900 uppercase tracking-widest">ชื่อสินค้า</th>
-                      <th className="px-8 py-6 text-[11px] font-black text-blue-900 uppercase tracking-widest text-center">คงเหลือ</th>
-                      <th className="px-8 py-6 text-[11px] font-black text-blue-900 uppercase tracking-widest text-center">หมดอายุเร็วสุด</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {groupedStock.length > 0 ? groupedStock.map((group: any, idx) => (
-                      <tr key={idx} className="hover:bg-slate-50/50 transition-all group">
+              <table className="w-full text-left">
+                <thead className="bg-slate-50/50">
+                  <tr>
+                    <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase">สินค้า</th>
+                    <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase text-center">คงเหลือ</th>
+                    <th className="px-8 py-6 text-[10px] font-black text-slate-500 uppercase text-center">วันหมดอายุใกล้สุด</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {groupedStock.map((group: any, idx) => {
+                    const isLowStock = group.totalCount < group.minStock;
+                    return (
+                      <tr key={idx} className="hover:bg-slate-50/50">
                         <td className="px-8 py-7">
-                          <div className="font-black text-blue-900 text-base leading-tight group-hover:text-blue-700 transition-colors">{group.thaiName || group.englishName}</div>
-                          <div className="text-[11px] text-slate-400 font-bold mt-1 uppercase tracking-tighter">{(group.manufacturer || '-')}</div>
+                          <div className="font-black text-slate-800">{group.thaiName || group.englishName}</div>
+                          <div className="text-[10px] text-slate-400 font-bold uppercase">{group.manufacturer}</div>
                         </td>
                         <td className="px-8 py-7 text-center">
-                          <span className={`px-4 py-2 rounded-2xl font-black text-sm shadow-sm inline-block min-w-[3rem] ${group.totalCount < group.minStock ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-blue-50 text-blue-900 border border-blue-100'}`}>
+                          <span className={`px-4 py-2 rounded-2xl font-black text-sm ${
+                            isLowStock 
+                              ? 'bg-red-50 text-red-600 animate-blink' 
+                              : 'bg-emerald-50 text-emerald-700'
+                          }`}>
                             {group.totalCount}
                           </span>
                         </td>
@@ -707,318 +956,161 @@ const App: React.FC = () => {
                           </span>
                         </td>
                       </tr>
-                    )) : (
-                      <tr>
-                        <td colSpan={3} className="py-24 text-center">
-                          <div className="text-slate-200 text-6xl mb-4">📦</div>
-                          <p className="text-slate-300 font-black italic">ยังไม่มีข้อมูลในคลังสินค้า</p>
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {isDataLoading && <div className="p-8 text-center text-slate-400 font-bold text-xs">กำลังโหลดข้อมูลล่าสุด...</div>}
             </div>
           </div>
         )}
 
-        {activeView === View.STOCK_IN && (
-          <div className="space-y-8">
-            {!currentUser ? <LoginRequired /> : (
-              <>
-                <div className="bg-blue-900 p-10 rounded-[3rem] text-white shadow-xl relative overflow-hidden">
-                  <div className="absolute right-[-10%] top-[-20%] text-[10rem] opacity-5">📥</div>
-                  <h2 className="text-3xl font-black leading-none text-white">รับสินค้าเข้า</h2>
-                  <p className="text-xs font-bold text-blue-200 uppercase tracking-[0.2em] mt-3">Inventory In-Flow</p>
-                </div>
-                <div className="flex flex-col gap-4">
-                  <Scanner label="สแกนฉลากเพื่อรับเข้า" onScan={handleStockIn} isLoading={isLoading} />
-                  <button onClick={startManualStockIn} className="w-full py-4 bg-white border-2 border-slate-100 rounded-[2rem] text-blue-900 font-black text-sm shadow-sm hover:bg-slate-50 transition-all">
-                    ⌨️ กรอกด้วยคีย์บอร์ด / ค้นหาด้วยชื่อค้นหา
-                  </button>
-                </div>
-                
-                {scanResult && matchedProduct && (
-                  <div className="bg-white p-10 rounded-[3rem] shadow-2xl border-t-8 border-blue-900 space-y-8 animate-in slide-in-from-bottom-6">
-                    <div className="bg-blue-50/50 p-6 rounded-[2rem] border-2 border-blue-100 flex justify-between items-center">
-                        <div>
-                          <p className="text-[10px] font-black text-blue-900/40 uppercase mb-2 tracking-widest">สินค้าที่เลือก</p>
-                          <h4 className="font-black text-blue-900 text-xl leading-tight">{matchedProduct.thai_name}</h4>
-                        </div>
-                        <button onClick={() => {setMatchedProduct(null); setDuplicateBatchInfo(null); startManualStockIn();}} className="text-[11px] font-black text-blue-900 bg-white px-4 py-2 rounded-xl shadow-sm hover:shadow-md transition-all">เปลี่ยนรายการ</button>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                          <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Batch Number</p>
-                          <input className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-blue-400" value={scanResult.batchNo} onChange={e => setScanResult({...scanResult, batchNo: e.target.value})} />
-                        </div>
-                        <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                          <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Expiry Date (หมดอายุ)</p>
-                          <input type="date" className="w-full bg-transparent font-black text-red-600 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400" value={scanResult.exp} onChange={e => setScanResult({...scanResult, exp: e.target.value})} />
-                        </div>
-                    </div>
-
-                    <div className="bg-blue-900 p-8 rounded-[2.5rem] text-center shadow-2xl">
-                        <p className="text-[10px] font-black text-white/50 mb-4 uppercase tracking-[0.2em]">จำนวนที่รับเข้าจริง</p>
-                        <div className="flex items-center justify-center gap-10">
-                          <button onClick={() => setInputQty(Math.max(1, inputQty - 1))} className="w-16 h-16 bg-white/10 rounded-full text-white text-3xl font-black hover:bg-white/20 active:scale-90 transition-all border border-white/10">-</button>
-                          <input type="number" className="w-32 bg-transparent text-center text-white text-6xl font-black outline-none border-b-4 border-white/20 pb-2" value={inputQty} onChange={e => setInputQty(parseInt(e.target.value) || 1)} />
-                          <button onClick={() => setInputQty(inputQty + 1)} className="w-16 h-16 bg-white/10 rounded-full text-white text-3xl font-black hover:bg-white/20 active:scale-90 transition-all border border-white/10">+</button>
-                        </div>
-                    </div>
-                    
-                    <button disabled={isLoading} onClick={executeStockIn} className="w-full py-7 bg-blue-900 text-white rounded-[2rem] font-black shadow-2xl shadow-blue-900/30 hover:bg-blue-800 active:scale-[0.98] transition-all text-lg">
-                      {isLoading ? 'กำลังบันทึกข้อมูล...' : 'บันทึกรับเข้าสต๊อก'}
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {activeView === View.STOCK_OUT && (
-          <div className="space-y-8">
-            {!currentUser ? <LoginRequired /> : (
-              <>
-                <div className="bg-slate-900 p-10 rounded-[3rem] text-white shadow-xl relative overflow-hidden">
-                  <div className="absolute right-[-10%] top-[-20%] text-[10rem] opacity-5">📤</div>
-                  <h2 className="text-3xl font-black leading-none text-white">จ่ายสินค้าออก</h2>
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em] mt-3">Release & Distribution</p>
-                </div>
-                <div className="flex flex-col gap-4">
-                  <Scanner label="สแกนฉลากเพื่อจ่ายออก" onScan={handleStockOutScan} isLoading={isLoading} />
-                  <button onClick={startManualStockOut} className="w-full py-4 bg-white border-2 border-slate-100 rounded-[2rem] text-blue-900 font-black text-sm shadow-sm hover:bg-slate-50 transition-all">
-                    ⌨️ กรอกด้วยคีย์บอร์ด / ค้นหาด้วยชื่อค้นหา
-                  </button>
-                </div>
-
-                {scanResult && matchedProduct && (
-                  <div className="bg-white p-10 rounded-[3rem] shadow-2xl border-t-8 border-red-600 space-y-8 animate-in slide-in-from-bottom-6">
-                    <div className="bg-red-50/50 p-6 rounded-[2rem] border-2 border-red-100 flex justify-between items-center">
-                        <div>
-                          <p className="text-[10px] font-black text-red-900/40 uppercase mb-2 tracking-widest">สินค้าเป้าหมาย</p>
-                          <h4 className="font-black text-blue-900 text-xl leading-tight">{matchedProduct.thai_name}</h4>
-                        </div>
-                        <button onClick={() => {setMatchedProduct(null); setEarliestExpInfo(null); startManualStockOut();}} className="text-[11px] font-black text-blue-900 bg-white px-4 py-2 rounded-xl shadow-sm">เปลี่ยน</button>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                       <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                          <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">Batch Number (พิมพ์เลข Batch)</p>
-                          <input className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400" value={scanResult.batchNo} placeholder="ระบุ Batch ที่ต้องการจ่าย" onChange={e => setScanResult({...scanResult, batchNo: e.target.value})} />
-                       </div>
-                       <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                          <p className="text-[10px] font-black text-slate-400 mb-2 uppercase tracking-widest">ชื่อผู้ป่วย / หน่วยงานรับสินค้า</p>
-                          <input type="text" placeholder="ระบุชื่อ-นามสกุล หรือ รหัสหน่วย" className="w-full bg-transparent font-black text-blue-900 text-xl outline-none border-b-2 border-slate-200 focus:border-red-400" value={patientName} onChange={e => setPatientName(e.target.value)} />
-                       </div>
-                    </div>
-
-                    <div className="bg-slate-100 p-8 rounded-[2.5rem] text-center flex flex-col items-center">
-                        <p className="text-[10px] font-black text-slate-400 mb-6 uppercase tracking-widest">จำนวนที่ต้องการจ่าย</p>
-                        <div className="flex items-center justify-center gap-10">
-                          <button onClick={() => setInputQty(Math.max(1, inputQty - 1))} className="w-14 h-14 bg-white text-blue-900 rounded-full shadow-md text-3xl font-black active:scale-90 transition-all border border-slate-200">-</button>
-                          <input type="number" className="w-24 bg-transparent text-center text-blue-900 text-6xl font-black outline-none border-b-4 border-slate-300 pb-2" value={inputQty} onChange={e => setInputQty(parseInt(e.target.value) || 1)} />
-                          <button onClick={() => setInputQty(inputQty + 1)} className="w-14 h-14 bg-white text-blue-900 rounded-full shadow-md text-3xl font-black active:scale-90 transition-all border border-slate-200">+</button>
-                        </div>
-                    </div>
-
-                    <button disabled={isLoading} onClick={executeStockOut} className="w-full py-7 bg-red-600 text-white rounded-[2rem] font-black shadow-2xl shadow-red-900/20 hover:bg-red-700 active:scale-[0.98] transition-all text-lg">
-                      {isLoading ? 'กำลังประมวลผลการจ่ายออก...' : 'ยืนยันจ่ายสินค้าออก'}
-                    </button>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {activeView === View.REGISTRATION && (
+        {/* หน้าจอ Login สำหรับ Staff */}
+        {activeView === View.USERS && (
           <div className="space-y-8 pb-32">
-            {!currentUser ? <LoginRequired /> : (
-              <>
-                <div className="bg-white p-8 rounded-[3rem] border-t-8 border-purple-600 shadow-sm flex flex-col gap-6">
-                  <h2 className="text-2xl font-black text-blue-900 mb-0">
-                    {editingProductId ? '📝 แก้ไขข้อมูลสินค้า Master Data' : 'ลงทะเบียน Master Data สินค้า'}
-                  </h2>
-                  <Scanner label="สแกนเพื่อเริ่มลงข้อมูล" onScan={handleRegisterScan} isLoading={isLoading} />
-                  <button onClick={startManualRegistration} className="w-full py-4 bg-slate-50 border-2 border-slate-100 rounded-[2rem] text-purple-600 font-black text-sm shadow-sm hover:bg-slate-100 transition-all">
-                    ⌨️ {editingProductId ? 'กรอกข้อมูลที่ต้องการแก้ไข' : 'กรอกข้อมูล Master Data เอง'}
+            <div className="bg-slate-700 p-10 rounded-[3rem] text-white shadow-xl">
+              <h2 className="text-3xl font-black leading-none">เข้าสู่ระบบเจ้าหน้าที่</h2>
+              <p className="text-xs font-bold text-slate-300 uppercase mt-3 tracking-widest">Authorized Personnel Only</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {users.map(u => (
+                <div key={u.id} onClick={() => {setLoginAttemptUser(u); setLoginPassword('');}} className="p-6 bg-white rounded-[2.5rem] border-2 border-slate-100 hover:border-blue-500 cursor-pointer flex items-center gap-5">
+                  <div className="w-14 h-14 rounded-full bg-slate-100 flex items-center justify-center font-black text-xl">{u.firstName[0]}</div>
+                  <div>
+                    <p className="font-black text-slate-800">{u.firstName}</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">{u.role}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* หน้าจอจัดการผู้ใช้ (Admin Only) */}
+        {activeView === View.USER_MANAGEMENT && currentUser?.role === 'admin' && (
+          <div className="space-y-8 pb-32">
+            <div className="bg-purple-900 p-10 rounded-[3rem] text-white shadow-xl flex justify-between items-center">
+              <div>
+                <h2 className="text-3xl font-black leading-none text-white">จัดการผู้ใช้งาน</h2>
+              </div>
+              <button onClick={() => storageService.migrateDatabase().then(() => showSuccess("Database Updated"))} className="px-4 py-2 bg-white/10 text-white text-[10px] font-black rounded-xl">DB SYNC 🔄</button>
+            </div>
+
+            {/* ส่วนของแบบฟอร์ม: ล็อคไว้จนกว่าจะกดปุ่มเพิ่ม */}
+            {(!isAddingUser && !editingUser) ? (
+              <button 
+                onClick={() => {
+                  setIsAddingUser(true); 
+                  setNewUser({ firstName: '', lastName: '', username: '', password: '', role: 'staff' });
+                }}
+                className="w-full py-8 bg-white border-4 border-dashed border-purple-200 text-purple-900 font-black rounded-[3rem] shadow-sm hover:border-purple-400 transition-all flex flex-col items-center justify-center gap-2"
+              >
+                <span className="text-3xl">👤➕</span>
+                <span className="text-sm uppercase tracking-widest">เพิ่มผู้ใช้งานใหม่</span>
+              </button>
+            ) : (
+              <div className="bg-white p-8 rounded-[3rem] shadow-sm border-4 border-purple-100 space-y-6 animate-in zoom-in-95 duration-300">
+                <div className="flex justify-between items-center">
+                  <h3 className="text-sm font-black text-purple-900 uppercase tracking-widest">{editingUser ? 'แก้ไขผู้ใช้งาน' : 'เพิ่มผู้ใช้งานใหม่'}</h3>
+                  <button onClick={() => {setIsAddingUser(false); setEditingUser(null);}} className="text-xs font-bold text-slate-400">ยกเลิก</button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 ml-2">ชื่อเรียก</label>
+                    <input placeholder="เช่น หมอแจ็ค" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-black text-blue-900 border border-transparent focus:border-blue-500" value={newUser.firstName} onChange={e => setNewUser({...newUser, firstName: e.target.value})} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 ml-2">Username</label>
+                    <input placeholder="ภาษาอังกฤษ" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-black text-blue-900 border border-transparent focus:border-blue-500" value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 ml-2">รหัสผ่าน (ตัวเลขเท่านั้น)</label>
+                    <input 
+                      type="password" 
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      placeholder="เช่น 1234" 
+                      className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-black text-blue-900 border border-transparent focus:border-blue-500 text-center text-xl tracking-widest" 
+                      value={newUser.password} 
+                      onChange={e => setNewUser({...newUser, password: e.target.value.replace(/\D/g, '')})} 
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black text-slate-400 ml-2">ระดับสิทธิ์</label>
+                    <select className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-black text-blue-900 border border-transparent focus:border-blue-500 appearance-none" value={newUser.role} onChange={e => setNewUser({...newUser, role: e.target.value as any})}>
+                      <option value="staff">Staff (เจ้าหน้าที่)</option>
+                      <option value="admin">Admin (ผู้ดูแลระบบ)</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="flex gap-4">
+                  <button onClick={() => {setIsAddingUser(false); setEditingUser(null);}} className="flex-1 py-5 bg-slate-100 text-slate-500 font-black rounded-2xl">ยกเลิก</button>
+                  <button onClick={handleUserReg} className="flex-[2] py-5 bg-purple-600 text-white font-black rounded-2xl shadow-lg hover:bg-purple-700 transition-all">
+                    {editingUser ? '💾 บันทึกการแก้ไข' : '✅ ยืนยันเพิ่มผู้ใช้'}
                   </button>
                 </div>
-
-                {scanResult && (
-                  <div className="bg-white p-10 rounded-[3rem] shadow-2xl border-t-8 border-emerald-500 space-y-8 animate-in slide-in-from-bottom-6">
-                    <div className="space-y-6">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                          <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">ชื่อเรียกภาษาไทย (ห้ามเว้นว่าง)</p>
-                          <input className="w-full bg-transparent font-black text-blue-900 outline-none text-xl border-b-2 border-slate-200 focus:border-emerald-500 transition-all" placeholder="เช่น น้ำยา PD สีเหลือง" value={scanResult.thaiName} onChange={e => setScanResult({...scanResult, thaiName: e.target.value})} />
-                        </div>
-                        <div className="bg-blue-50/50 p-6 rounded-3xl border border-blue-100">
-                          <p className="text-[10px] font-black text-blue-900/60 uppercase mb-2 tracking-widest">ชื่อค้นหา (Search Name)</p>
-                          <input className="w-full bg-transparent font-black text-blue-900 outline-none text-xl border-b-2 border-blue-200 focus:border-blue-500 transition-all" placeholder="เช่น สีเหลือง, เหลือง 1.5" value={scanResult.searchName} onChange={e => setScanResult({...scanResult, searchName: e.target.value})} />
-                        </div>
-                      </div>
-                      <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                        <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">ผู้ผลิต / แบรนด์</p>
-                        <input className="w-full bg-transparent font-black text-blue-900 outline-none text-base border-b-2 border-slate-200 focus:border-emerald-500 transition-all" placeholder="ระบุผู้ผลิต" value={scanResult.manufacturer} onChange={e => setScanResult({...scanResult, manufacturer: e.target.value})} />
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                          <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">เบอร์ติดต่อสั่งซื้อ</p>
-                          <input placeholder="เช่น 02-123-4567" className="w-full bg-transparent font-black text-blue-900 outline-none" value={tempContact} onChange={e => setTempContact(e.target.value)} />
-                        </div>
-                        <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
-                          <p className="text-[10px] font-black text-slate-400 uppercase mb-2 tracking-widest">ยอดคงคลังขั้นต่ำ (Min)</p>
-                          <input type="number" className="w-full bg-transparent font-black text-blue-900 outline-none" value={tempMinStock} onChange={e => setTempMinStock(parseInt(e.target.value) || 0)} />
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex gap-4">
-                      {editingProductId && <button onClick={() => {setEditingProductId(null); setScanResult(null);}} className="flex-1 py-7 bg-slate-100 text-slate-500 font-black rounded-[2rem] border border-slate-200 active:scale-[0.98] transition-all">ยกเลิกแก้ไข</button>}
-                      <button disabled={isLoading || !scanResult.thaiName.trim()} onClick={executeRegistration} className="flex-[2] py-7 bg-emerald-600 text-white font-black rounded-[2rem] shadow-2xl shadow-emerald-900/20 active:scale-[0.98] transition-all text-lg">
-                        {isLoading ? 'กำลังบันทึก...' : (editingProductId ? '💾 บันทึกการแก้ไขข้อมูล' : 'บันทึกข้อมูลหลักสินค้า')}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </>
+              </div>
             )}
 
             <div className="space-y-4">
-              <div className="px-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <h3 className="text-xl font-black text-blue-900">สินค้าในระบบทั้งหมด (คลิกเพื่อแก้ไข)</h3>
-                <div className="relative">
-                  <input type="text" placeholder="🔍 ค้นหาด้วยชื่อ หรือ ชื่อค้นหา..." className="p-4 bg-white border border-slate-200 rounded-2xl text-sm font-black text-blue-900 outline-none focus:ring-4 focus:ring-purple-50 w-full md:w-64 shadow-sm" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
-                </div>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {filteredProducts.map((p) => (
-                    <div key={p.id} onClick={() => selectProductForEdit(p)} className={`bg-white p-6 rounded-[2.5rem] border-2 cursor-pointer shadow-sm flex items-center gap-5 transition-all ${editingProductId === p.id ? 'border-emerald-500 bg-emerald-50 shadow-md ring-4 ring-emerald-100' : 'border-slate-100 hover:border-purple-200 hover:shadow-md'}`}>
-                      <div className="w-16 h-16 rounded-2xl bg-white border border-slate-100 flex items-center justify-center overflow-hidden shrink-0 shadow-inner">
-                        {p.photo ? <img src={p.photo} className="w-full h-full object-cover" /> : <span className="text-2xl text-blue-900">📦</span>}
-                      </div>
-                      <div className="flex-1 overflow-hidden">
-                        <p className="font-black text-blue-900 leading-tight truncate">{p.thai_name}</p>
-                        <div className="flex flex-wrap items-center gap-2 mt-1">
-                          <p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter">{(p.manufacturer || 'Unknown')}</p>
-                          {p.search_name && <span className="text-[9px] font-black bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full border border-purple-200">{p.search_name}</span>}
-                        </div>
-                      </div>
+              <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-4">รายชื่อผู้ใช้งานในระบบ</h3>
+              {users.map(u => (
+                <div key={u.id} className="bg-white p-6 rounded-[2.5rem] border border-slate-100 flex items-center justify-between shadow-sm hover:border-purple-200 transition-all">
+                  <div className="flex items-center gap-4">
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-white ${u.role === 'admin' ? 'bg-purple-600' : 'bg-blue-600'}`}>{u.firstName[0]}</div>
+                    <div>
+                      <p className="font-black text-slate-800">{u.firstName}</p>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase">@{u.username} • {u.role}</p>
                     </div>
-                ))}
-              </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => {setEditingUser(u); setNewUser({...u, password: u.password || ''}); window.scrollTo({ top: 0, behavior: 'smooth' });}} className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-100 transition-colors flex items-center justify-center">✏️</button>
+                    <button onClick={() => handleDeleteUser(u.id)} className="w-10 h-10 bg-red-50 text-red-600 rounded-xl hover:bg-red-100 transition-colors flex items-center justify-center">🗑️</button>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
 
-        {/* History Views */}
-        {activeView === View.RECEIPT_HISTORY && (
-          <div className="space-y-8 pb-32">
-            <div className="bg-purple-900 p-10 rounded-[3rem] text-white shadow-xl">
-              <h2 className="text-3xl font-black leading-none text-white">ประวัติการรับสินค้า</h2>
-              <p className="text-xs font-bold text-purple-200 uppercase tracking-[0.2em] mt-3">Receipt Log</p>
-            </div>
-            <div className="bg-white rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
-              <div className="overflow-x-auto">
+        {/* ประวัติการรับ/จ่าย */}
+        {(activeView === View.RECEIPT_HISTORY || activeView === View.RELEASE_HISTORY) && currentUser && (
+           <div className="space-y-8 pb-32">
+             <div className={`${activeView === View.RECEIPT_HISTORY ? 'bg-emerald-900' : 'bg-orange-900'} p-10 rounded-[3rem] text-white shadow-xl`}>
+               <h2 className="text-3xl font-black leading-none">{activeView === View.RECEIPT_HISTORY ? 'ประวัติการรับเข้า' : 'ประวัติการจ่ายออก'}</h2>
+             </div>
+             <div className="bg-white rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
                 <table className="w-full text-left">
-                  <thead className="bg-slate-50/50">
+                  <thead className="bg-slate-50">
                     <tr>
-                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">สินค้า</th>
-                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">Batch/วันหมดอายุ</th>
-                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest text-center">จำนวน</th>
-                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">ผู้บันทึก/วันที่</th>
+                      <th className="p-4 text-[10px] font-black uppercase text-slate-400">วันที่</th>
+                      <th className="p-4 text-[10px] font-black uppercase text-slate-400">สินค้า/ผู้ป่วย</th>
+                      <th className="p-4 text-[10px] font-black uppercase text-slate-400">จำนวน</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {receiptHistory.map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50/50 transition-all">
-                        <td className="px-6 py-4"><div className="font-black text-blue-900 text-sm leading-tight">{item.thai_name}</div></td>
-                        <td className="px-6 py-4"><div className="text-[10px] font-black text-slate-500">BATCH: {item.batch_no}</div><div className="text-[10px] font-black text-red-600">EXP: {item.exp}</div></td>
-                        <td className="px-6 py-4 text-center"><span className="px-3 py-1 bg-blue-50 text-blue-900 rounded-lg font-black text-xs">{item.quantity}</span></td>
-                        <td className="px-6 py-4"><div className="text-[10px] font-black text-blue-900">@{item.processed_by}</div><div className="text-[10px] font-bold text-slate-400">{new Date(item.created_at).toLocaleString('th-TH')}</div></td>
+                  <tbody className="divide-y">
+                    {(activeView === View.RECEIPT_HISTORY ? receiptHistory : releaseHistory).map((h: any) => (
+                      <tr key={h.id}>
+                        <td className="p-4 text-[10px] font-bold text-slate-500">{new Date(h.created_at).toLocaleDateString('th-TH')}</td>
+                        <td className="p-4">
+                          <p className="font-black text-slate-800 text-xs">{h.thai_name}</p>
+                          <p className="text-[9px] font-bold text-slate-400">{h.patient_name ? `ผู้ป่วย: ${h.patient_name}` : `โดย: @${h.processed_by}`}</p>
+                        </td>
+                        <td className="p-4 font-black text-xs">{h.quantity}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-              </div>
-            </div>
-          </div>
+             </div>
+           </div>
         )}
 
-        {activeView === View.RELEASE_HISTORY && (
-          <div className="space-y-8 pb-32">
-            <div className="bg-red-900 p-10 rounded-[3rem] text-white shadow-xl">
-              <h2 className="text-3xl font-black leading-none text-white">ประวัติการจ่ายสินค้า</h2>
-              <p className="text-xs font-bold text-red-200 uppercase tracking-[0.2em] mt-3">Release Log</p>
-            </div>
-            <div className="bg-white rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left">
-                  <thead className="bg-slate-50/50">
-                    <tr>
-                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">สินค้า/ผู้ป่วย</th>
-                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">Batch/EXP</th>
-                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest text-center">จำนวน</th>
-                      <th className="px-6 py-4 text-[11px] font-black text-blue-900 uppercase tracking-widest">ผู้บันทึก/วันที่</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {releaseHistory.map((item) => (
-                      <tr key={item.id} className="hover:bg-slate-50/50 transition-all">
-                        <td className="px-6 py-4"><div className="font-black text-blue-900 text-sm leading-tight">{item.thai_name}</div><div className="text-[10px] font-black text-purple-600 mt-1 uppercase">TO: {item.patient_name}</div></td>
-                        <td className="px-6 py-4"><div className="text-[10px] font-black text-slate-500">BATCH: {item.batch_no}</div><div className="text-[10px] font-black text-red-600">EXP: {item.exp}</div></td>
-                        <td className="px-6 py-4 text-center"><span className="px-3 py-1 bg-red-50 text-red-600 rounded-lg font-black text-xs">{item.quantity}</span></td>
-                        <td className="px-6 py-4"><div className="text-[10px] font-black text-blue-900">@{item.processed_by}</div><div className="text-[10px] font-bold text-slate-400">{new Date(item.created_at).toLocaleString('th-TH')}</div></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {activeView === View.SETTINGS && (
-          <div className="space-y-8 pb-32">
-            <div className="bg-slate-900 p-10 rounded-[3rem] text-white shadow-xl flex justify-between items-center">
-              <div><h2 className="text-3xl font-black leading-none text-white">การตั้งค่าคลาวด์</h2><p className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em] mt-3">Supabase Integration</p></div>
-              {isConfigured && <span className="bg-emerald-500/20 text-emerald-400 px-4 py-2 rounded-full text-[11px] font-black border border-emerald-500/30">ONLINE 🟢</span>}
-            </div>
-            
-            <div className="bg-white p-10 rounded-[3rem] shadow-sm border border-slate-100 space-y-8">
-              <div className="bg-amber-50 p-6 rounded-[2rem] border-2 border-amber-100 flex flex-col gap-4">
-                <div className="flex items-center gap-3"><span className="text-2xl">🛠️</span><p className="text-sm font-black text-amber-900 uppercase tracking-widest">Database Maintenance</p></div>
-                <p className="text-[11px] font-bold text-amber-800 leading-relaxed">หากคุณพบข้อผิดพลาด "search_name column not found" กรุณากดปุ่มด้านล่างเพื่ออัปเดตโครงสร้างฐานข้อมูล Supabase อัตโนมัติ</p>
-                <button onClick={handleRunMigration} disabled={isLoading} className="w-full py-4 bg-amber-600 text-white font-black rounded-2xl shadow-lg active:scale-95 transition-all text-sm">
-                  {isLoading ? 'กำลังประมวลผล...' : 'รัน Migration (เพิ่มช่องชื่อค้นหา)'}
-                </button>
-              </div>
-
-              <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest">Supabase Project URL</label>
-                  <input className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-3xl font-mono text-sm text-blue-900 font-black" placeholder="https://..." value={sbConfig.url} onChange={e => setSbConfig({...sbConfig, url: e.target.value})} />
-              </div>
-              <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest">Supabase Anon Key</label>
-                  <textarea className="w-full p-6 bg-slate-50 border-2 border-slate-100 rounded-3xl font-mono text-[11px] h-32 text-blue-900 font-black" placeholder="eyJhbG..." value={sbConfig.key} onChange={e => setSbConfig({...sbConfig, key: e.target.value})} />
-              </div>
-              
-              <div className="flex flex-col gap-4 pt-4">
-                  <button onClick={handleTestConnection} disabled={isTestingConnection} className="w-full py-5 bg-slate-100 text-slate-600 font-black rounded-[2rem] border-2 border-slate-200 active:scale-95 transition-all">🔍 ทดสอบการเชื่อมต่อ</button>
-                  <button onClick={handleSaveConfig} className="w-full py-6 bg-blue-900 text-white font-black rounded-[2rem] shadow-2xl shadow-blue-900/20 text-lg">💾 บันทึกและเริ่มใช้งานระบบ Cloud</button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
 
       {error && (
-        <div className="fixed bottom-28 left-4 right-4 bg-red-600 text-white p-6 rounded-[2rem] shadow-2xl z-[800] flex items-center justify-between font-black animate-in slide-in-from-bottom-4">
-          <div className="flex items-center gap-4"><span className="text-2xl text-white">⚠️</span><span className="text-xs leading-tight text-white">{error}</span></div>
-          <button onClick={() => setError(null)} className="bg-white/20 p-3 rounded-2xl text-[10px] font-black uppercase text-white">ปิด</button>
+        <div className="fixed bottom-28 left-4 right-4 bg-red-600 text-white p-6 rounded-[2rem] shadow-2xl z-[800] flex items-center justify-between font-black">
+          <div className="flex items-center gap-4"><span className="text-2xl">⚠️</span><span className="text-xs">{error}</span></div>
+          <button onClick={() => setError(null)} className="bg-white/20 px-3 py-1 rounded-full text-[10px] uppercase">ปิด</button>
         </div>
       )}
     </Layout>

@@ -1,136 +1,114 @@
-
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { StockItem, Product, User, ReceiptHistory, ReleaseHistory } from "../types";
+import { StockItem, Product, User, ReceiptHistory, ReleaseHistory, GuestRequest } from "../types";
 
-let supabase: SupabaseClient | null = null;
+const SUPABASE_URL = "https://iovkwbomfhwlbmrnaqlu.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlvdmt3Ym9tZmh3bGJtcm5hcWx1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjY0MDczMDMsImV4cCI6MjA4MTk4MzMwM30.dTU6IuoTbvTqYYMnWbmE3zFmY9JSTO-l-6Dro2AMIi4";
 
-const isValidUrl = (url: string) => {
-  try {
-    const u = new URL(url);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
-};
-
-const getSupabase = () => {
-  if (supabase) return supabase;
-  const config = localStorage.getItem('supabase_config');
-  if (config) {
-    try {
-      const { url, key } = JSON.parse(config);
-      if (url && key && isValidUrl(url)) {
-        supabase = createClient(url.trim(), key.trim(), {
-          auth: { persistSession: false }
-        });
-        return supabase;
-      }
-    } catch (e) {
-      console.error("Supabase Init Error:", e);
-    }
-  }
-  return null;
-};
+let supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { persistSession: false }
+});
 
 export const storageService = {
-  configure: (url: string, key: string) => {
-    if (!isValidUrl(url)) throw new Error("URL ไม่ถูกต้อง");
-    supabase = createClient(url.trim(), key.trim(), {
-      auth: { persistSession: false }
-    });
-    localStorage.setItem('supabase_config', JSON.stringify({ url: url.trim(), key: key.trim() }));
-  },
-
-  isConfigured: () => getSupabase() !== null,
-
-  testConnection: async (url: string, key: string): Promise<boolean> => {
-    if (!isValidUrl(url)) throw new Error("รูปแบบ URL ไม่ถูกต้อง");
-    try {
-      const tempClient = createClient(url.trim(), key.trim());
-      const { error } = await tempClient.from('products').select('id').limit(1);
-      if (error && error.code !== 'PGRST116') throw error;
-      return true;
-    } catch (err: any) {
-      throw new Error(err.message || "ไม่สามารถเชื่อมต่อได้");
-    }
-  },
+  isConfigured: () => true,
 
   migrateDatabase: async (): Promise<void> => {
-    const client = getSupabase();
-    if (!client) throw new Error("กรุณาตั้งค่า Cloud ก่อน");
-    // หมายเหตุ: การใช้ RPC หรือ SQL โดยตรงผ่าน API อาจถูกจำกัดในบางโปรเจค 
-    // หากวิธีนี้ไม่ได้ผล ผู้ใช้ควรไปที่ SQL Editor ใน Supabase แล้วรัน:
-    // ALTER TABLE products ADD COLUMN IF NOT EXISTS search_name TEXT;
-    const { error } = await client.rpc('exec_sql', { 
-      sql_query: 'ALTER TABLE products ADD COLUMN IF NOT EXISTS search_name TEXT;' 
-    });
-    
-    // ถ้าไม่มี RPC ให้ลอง insert column แบบหว่านแห (Supabase มักจะทำไม่ได้โดยตรงจาก Client)
-    // แต่เราจะใช้วิธีแจ้งเตือนใน UI แทนถ้า error ยังคงอยู่
-    if (error) {
-      console.error("Migration via RPC failed, please run SQL manually:", error);
-      throw new Error("ไม่สามารถอัปเดตอัตโนมัติได้ กรุณารัน SQL: ALTER TABLE products ADD COLUMN search_name TEXT; ใน Supabase SQL Editor");
+    const queries = [
+      'ALTER TABLE products ADD COLUMN IF NOT EXISTS search_name TEXT;',
+      'ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT \'staff\';',
+      'ALTER TABLE guest_requests ADD COLUMN IF NOT EXISTS file_number TEXT;',
+      'ALTER TABLE guest_requests ADD COLUMN IF NOT EXISTS hn_number TEXT;',
+      `CREATE TABLE IF NOT EXISTS guest_requests (
+        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        type TEXT NOT NULL,
+        patient_name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        product_name TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        expected_date DATE NOT NULL,
+        status TEXT DEFAULT 'Pending',
+        file_number TEXT,
+        hn_number TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+      );`
+    ];
+
+    for (const sql of queries) {
+      try {
+        await supabase.rpc('exec_sql', { sql_query: sql });
+      } catch (e) {
+        console.error("Migration error:", e);
+      }
     }
   },
 
   fetchUsers: async (): Promise<User[]> => {
-    const client = getSupabase();
-    if (!client) return [];
-    const { data, error } = await client.from('users').select('*').order('username');
+    const { data, error } = await supabase.from('users').select('*').order('username');
     if (error) throw error;
     return data as User[];
   },
 
   registerUser: async (user: Omit<User, 'id'>): Promise<User> => {
-    const client = getSupabase();
-    if (!client) throw new Error("กรุณาตั้งค่า Cloud ก่อน");
-    const { data, error } = await client.from('users').insert([user]).select().single();
+    const { data, error } = await supabase.from('users').insert([user]).select().single();
     if (error) throw error;
     return data as User;
   },
 
+  updateUser: async (id: string, updates: Partial<User>): Promise<User> => {
+    const { data, error } = await supabase.from('users').update(updates).eq('id', id).select().single();
+    if (error) throw error;
+    return data as User;
+  },
+
+  deleteUser: async (id: string): Promise<void> => {
+    const { error } = await supabase.from('users').delete().eq('id', id);
+    if (error) throw error;
+  },
+
   fetchItems: async (): Promise<StockItem[]> => {
-    const client = getSupabase();
-    if (!client) return [];
-    const { data, error } = await client.from('stock_items').select('*').order('timestamp', { ascending: false });
+    const { data, error } = await supabase.from('stock_items').select('*').order('timestamp', { ascending: false });
     if (error) throw error;
     return (data || []) as StockItem[];
   },
 
   saveReceiptHistory: async (history: Omit<ReceiptHistory, 'id' | 'created_at'>): Promise<void> => {
-    const client = getSupabase();
-    if (!client) throw new Error("กรุณาตั้งค่า Cloud ก่อน");
-    const { error } = await client.from('receipt_history').insert([history]);
+    const { error } = await supabase.from('receipt_history').insert([history]);
     if (error) throw error;
   },
 
   fetchReceiptHistory: async (): Promise<ReceiptHistory[]> => {
-    const client = getSupabase();
-    if (!client) return [];
-    const { data, error } = await client.from('receipt_history').select('*').order('created_at', { ascending: false });
+    const { data, error } = await supabase.from('receipt_history').select('*').order('created_at', { ascending: false });
     if (error) throw error;
     return (data || []) as ReceiptHistory[];
   },
 
   saveReleaseHistory: async (history: Omit<ReleaseHistory, 'id' | 'created_at'>): Promise<void> => {
-    const client = getSupabase();
-    if (!client) throw new Error("กรุณาตั้งค่า Cloud ก่อน");
-    const { error } = await client.from('release_history').insert([history]);
+    const { error } = await supabase.from('release_history').insert([history]);
     if (error) throw error;
   },
 
   fetchReleaseHistory: async (): Promise<ReleaseHistory[]> => {
-    const client = getSupabase();
-    if (!client) return [];
-    const { data, error } = await client.from('release_history').select('*').order('created_at', { ascending: false });
+    const { data, error } = await supabase.from('release_history').select('*').order('created_at', { ascending: false });
     if (error) throw error;
     return (data || []) as ReleaseHistory[];
   },
 
+  saveGuestRequest: async (request: Omit<GuestRequest, 'id' | 'created_at' | 'status'>): Promise<void> => {
+    const { error } = await supabase.from('guest_requests').insert([request]);
+    if (error) throw error;
+  },
+
+  fetchGuestRequests: async (): Promise<GuestRequest[]> => {
+    const { data, error } = await supabase.from('guest_requests').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+    return (data || []) as GuestRequest[];
+  },
+
+  updateGuestRequestStatus: async (id: string, status: GuestRequest['status']): Promise<void> => {
+    const { error } = await supabase.from('guest_requests').update({ status }).eq('id', id);
+    if (error) throw error;
+  },
+
   saveItem: async (item: Omit<StockItem, 'id' | 'timestamp' | 'status'>, username?: string): Promise<StockItem> => {
-    const client = getSupabase();
-    if (!client) throw new Error("กรุณาตั้งค่า Cloud ก่อน");
-    
     const timestamp = new Date().toISOString();
     const newItem = { 
       thai_name: item.thai_name,
@@ -145,7 +123,7 @@ export const storageService = {
       timestamp: timestamp 
     };
 
-    const { data, error } = await client.from('stock_items').insert([newItem]).select().single();
+    const { data, error } = await supabase.from('stock_items').insert([newItem]).select().single();
     if (error) throw new Error(`บันทึกไม่สำเร็จ: ${error.message}`);
 
     try {
@@ -165,10 +143,7 @@ export const storageService = {
   },
 
   releaseItemByBatch: async (batch_no: string, qtyToRelease: number, username?: string, patient_name?: string): Promise<StockItem | null> => {
-    const client = getSupabase();
-    if (!client) throw new Error("กรุณาตั้งค่า Cloud ก่อน");
-
-    const { data: items, error: findError } = await client
+    const { data: items, error: findError } = await supabase
       .from('stock_items')
       .select('*')
       .eq('batch_no', batch_no)
@@ -189,7 +164,7 @@ export const storageService = {
       const currentQty = item.quantity || 1;
       
       if (currentQty <= remainingToRelease) {
-        const { data, error } = await client
+        const { data, error } = await supabase
           .from('stock_items')
           .update({ 
             status: 'Released', 
@@ -202,9 +177,9 @@ export const storageService = {
         remainingToRelease -= currentQty;
         lastUpdatedItem = data;
       } else {
-        await client.from('stock_items').update({ quantity: currentQty - remainingToRelease }).eq('id', item.id);
+        await supabase.from('stock_items').update({ quantity: currentQty - remainingToRelease }).eq('id', item.id);
         const { id, ...itemWithoutId } = item;
-        const { data: releasedData, error: insertError } = await client.from('stock_items').insert([{
+        const { data: releasedData, error: insertError } = await supabase.from('stock_items').insert([{
           ...itemWithoutId,
           quantity: remainingToRelease,
           status: 'Released',
@@ -236,27 +211,13 @@ export const storageService = {
   },
 
   fetchProducts: async (): Promise<Product[]> => {
-    const client = getSupabase();
-    if (!client) return [];
-    // ระบุคอลัมน์ชัดเจนเพื่อหลีกเลี่ยง error ถ้า search_name ยังไม่มี
-    // ถ้า select('*') แล้วพัง ให้ลอง select เฉพาะที่แน่ใจก่อน
-    const { data, error } = await client.from('products').select('id, thai_name, english_name, manufacturer, contact_number, min_stock, photo, status, registered_by, created_at, search_name').order('thai_name');
-    
-    // ถ้าพังเพราะ search_name ไม่มี ให้ดึงแบบปกติก่อน
-    if (error && error.message.includes('search_name')) {
-      const { data: fallbackData, error: fallbackError } = await client.from('products').select('id, thai_name, english_name, manufacturer, contact_number, min_stock, photo, status, registered_by, created_at').order('thai_name');
-      if (fallbackError) throw fallbackError;
-      return (fallbackData || []) as Product[];
-    }
-    
+    const { data, error } = await supabase.from('products').select('*').order('thai_name');
     if (error) throw error;
     return (data || []) as Product[];
   },
 
   registerProduct: async (product: Omit<Product, 'id' | 'created_at'>, username?: string): Promise<Product> => {
-    const client = getSupabase();
-    if (!client) throw new Error("กรุณาตั้งค่า Cloud ก่อน");
-    const { data, error } = await client.from('products').insert([{ 
+    const { data, error } = await supabase.from('products').insert([{ 
       ...product, 
       status: 'Active', 
       registered_by: username 
@@ -266,9 +227,7 @@ export const storageService = {
   },
 
   updateProduct: async (id: string, updates: Partial<Product>): Promise<Product> => {
-    const client = getSupabase();
-    if (!client) throw new Error("กรุณาตั้งค่า Cloud ก่อน");
-    const { data, error } = await client.from('products').update(updates).eq('id', id).select().single();
+    const { data, error } = await supabase.from('products').update(updates).eq('id', id).select().single();
     if (error) throw error;
     return data as Product;
   }

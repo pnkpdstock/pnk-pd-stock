@@ -1,17 +1,17 @@
-
 export interface User {
   id: string;
   firstName: string;
   lastName: string;
   username: string;
   password?: string;
+  role: 'admin' | 'staff';
 }
 
 export interface Product {
   id: string;
   thai_name: string;
   english_name: string;
-  search_name: string; // เพิ่มฟิลด์สำหรับชื่อค้นหา
+  search_name: string;
   manufacturer: string;
   contact_number?: string;
   min_stock?: number;
@@ -60,10 +60,24 @@ export interface ReleaseHistory {
   created_at: string;
 }
 
+export interface GuestRequest {
+  id: string;
+  type: 'Request' | 'Return';
+  patient_name: string;
+  phone: string;
+  product_name: string;
+  quantity: number;
+  expected_date: string;
+  status: 'Pending' | 'Completed' | 'Cancelled';
+  file_number?: string;
+  hn_number?: string;
+  created_at: string;
+}
+
 export interface LabelExtractionResult {
   thaiName: string;
   englishName: string;
-  searchName?: string; // เพิ่มใน result ด้วย
+  searchName?: string;
   batchNo: string;
   mfd: string;
   exp: string;
@@ -80,5 +94,9 @@ export enum View {
   RECEIPT_HISTORY = 'receipt_history',
   RELEASE_HISTORY = 'release_history',
   SETTINGS = 'settings',
-  USERS = 'users'
+  USERS = 'users',
+  USER_MANAGEMENT = 'user_management',
+  GUEST_REQUEST = 'guest_request', // ขอน้ำยา
+  GUEST_RETURN = 'guest_return',   // คืนน้ำยา
+  QUEUE_LIST = 'queue_list'        // รายการรอคิว (สำหรับ Staff/Admin)
 }
